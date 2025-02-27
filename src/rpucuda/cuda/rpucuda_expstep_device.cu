@@ -10,10 +10,27 @@
 
 namespace RPU {
 namespace {
+// #define UPDATE_ONCE                                                                                \
+//   {                                                                                                \
+//     T z = (T)2.0 * w / b_diff * a + b;                                                             \
+//     T y = (T)1.0 - A * (T)__expf(gamma * z);                                                       \
+//     if (y > (T)0.0) {                                                                              \
+//       if (noise_std_dw > (T)0.0) {                                                                 \
+//         T stoch_value = curand_normal(&local_state);                                               \
+//         stoch_value *= noise_std_dw;                                                               \
+//         w += y * (stoch_value + (T)1.0) * dw;                                                      \
+//       } else {                                                                                     \
+//         w += y * dw;                                                                               \
+//       }                                                                                            \
+//       w = (w > wmax) ? wmax : w;                                                                   \
+//       w = (w < wmin) ? wmin : w;                                                                   \
+//     }                                                                                              \
+//   }
+
 #define UPDATE_ONCE                                                                                \
   {                                                                                                \
-    T z = (T)2.0 * w / b_diff * a + b;                                                             \
-    T y = (T)1.0 - A * (T)__expf(gamma * z);                                                       \
+    T z = (negative > 0) ? 1 - w / wmax : 1 - w / wmin;                                            \
+    T y = (__expf(gamma * z) - (T)1.0) / (__expf(gamma) - (T)1.0);                                 \
     if (y > (T)0.0) {                                                                              \
       if (noise_std_dw > (T)0.0) {                                                                 \
         T stoch_value = curand_normal(&local_state);                                               \
