@@ -75,7 +75,7 @@ template <typename T> struct UpdateFunctorPowStep {
         for (int i_updates = 0; i_updates < n; i_updates++) {
           // T x = (wmax - w) / range;
           // w += scale * ((negative > 0) ? (T)__powf(x, gamma) : (T)__powf((T)1.0 - x, gamma));
-          w += scale * (scale * (T)__powf((negative > 0) ? 1 - w / wmax : 1 - w / wmin, gamma));
+          w += scale * (T)__powf((negative > 0) ? 1 - w / wmax : 1 - w / wmin, gamma);
           // better always check both bounds
           w = (w > wmax) ? wmax : w;
           w = (w < wmin) ? wmin : w;
