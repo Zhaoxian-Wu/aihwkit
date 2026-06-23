@@ -502,6 +502,11 @@ class TileTest(ParametrizedTestCase):
 
     def test_program_weights(self) -> None:
         """Tests whether weight programming is performed"""
+        # Programming uses a stochastic pulsed update; seed the RNG so the
+        # iterative convergence is deterministic and does not depend on the
+        # global RNG state left over by previously executed tests (which made
+        # transfer-compound tiles intermittently exceed the tolerance).
+        manual_seed(123)
         rpu_config = self.get_rpu_config()
         if hasattr(rpu_config, "forward"):
             rpu_config.forward.is_perfect = True  # avoid additional reading noise

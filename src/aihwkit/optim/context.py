@@ -10,7 +10,7 @@
 
 from typing import Optional, Type, Union, Any, List, TYPE_CHECKING
 
-from torch import dtype, Tensor
+from torch import dtype, Tensor, no_grad
 from torch._C import DisableTorchFunction
 from torch.nn import Parameter
 from torch import device as torch_device
@@ -113,6 +113,8 @@ class AnalogContext(Parameter):
         estimated_weights, estimated_bias = analog_ctx.analog_tile.read_weights()
     """
 
+    grad: Optional[Tensor]
+
     def __new__(
         cls: Type["AnalogContext"],
         analog_tile: "SimulatorTileWrapper",
@@ -144,6 +146,7 @@ class AnalogContext(Parameter):
         self.use_indexed = False
         self._data_view_mode = AnalogContextDataViewMode.PLACEHOLDER
         self._data_buffer = None  # type: Optional[Tensor]
+        self.digital_grad_accumulation = False
         self.analog_input = []  # type: list
         self.analog_grad_output = []  # type: list
         self.reset(analog_tile)
@@ -415,6 +418,17 @@ class AnalogContext(Parameter):
         """Set the context to forward_indexed."""
         self.use_indexed = value
 
+    def set_digital_grad_accumulation(self, value: bool = True) -> None:
+        """Enable immediate digital gradient accumulation during backward.
+
+        When enabled, ``AnalogFunction.backward`` computes the digital rank
+        update from the current ``x`` and ``d`` tensors and accumulates it in
+        ``self.grad`` instead of retaining the tensors in ``analog_input`` and
+        ``analog_grad_output``. Optimizers that enable this mode are expected to
+        consume ``AnalogContext.grad`` directly.
+        """
+        self.digital_grad_accumulation = value
+
     def get_data(self) -> Tensor:
         """Get a detached tensor from the active public data view."""
         if self._get_data_view_mode() == AnalogContextDataViewMode.PLACEHOLDER:
@@ -434,6 +448,38 @@ class AnalogContext(Parameter):
     def has_gradient(self) -> bool:
         """Return whether a gradient trace was stored."""
         return len(self.analog_input) > 0
+
+    @staticmethod
+    def _reshape_update_tensor(tensor: Tensor, feature_dim: int) -> Tensor:
+        """Move the feature axis last and flatten all batch-like axes."""
+        if feature_dim < 0:
+            feature_dim += tensor.dim()
+        if feature_dim != tensor.dim() - 1:
+            tensor = tensor.movedim(feature_dim, -1)
+        return tensor.reshape(-1, tensor.size(-1))
+
+    @no_grad()
+    def accumulate_digital_gradient(self, x_input: Tensor, d_input: Tensor) -> None:
+        """Accumulate the digital weight gradient from an analog backward trace."""
+        if self.use_indexed:
+            raise NotImplementedError(
+                "Digital gradient accumulation does not support indexed updates."
+            )
+
+        analog_tile: Any = self.analog_tile
+        x_dim = 0 if analog_tile.in_trans else x_input.dim() - 1
+        d_dim = 0 if analog_tile.out_trans else d_input.dim() - 1
+        x_input, d_input = analog_tile.pre_update(x_input, x_dim, d_input, d_dim)
+
+        x_matrix = self._reshape_update_tensor(x_input, x_dim)
+        d_matrix = self._reshape_update_tensor(d_input, d_dim)
+        grad = d_matrix.transpose(0, 1).matmul(x_matrix)
+
+        current_grad = self.grad
+        if current_grad is None:
+            self.grad = grad
+        else:
+            current_grad.add_(grad)
 
     def __copy__(self) -> Parameter:
         """Turn off copying of the pointers. Context will be re-created

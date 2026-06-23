@@ -56,6 +56,26 @@ class AnalogOptimizerMixin:
         for group in analog_param_groups:
             self.add_param_group(group)  # type: ignore[attr-defined]
 
+    def set_digital_grad_accumulation(self, value: bool = True) -> None:
+        """Enable immediate digital gradient accumulation on analog contexts.
+
+        This mode is intended for optimizers that consume ``AnalogContext.grad``
+        directly instead of using the retained ``x`` and ``d`` traces for tile
+        updates. It must be enabled before calling ``backward()``.
+        """
+        for group in self.param_groups:  # type: ignore[has-type]
+            for param in group["params"]:
+                if isinstance(param, AnalogContext):
+                    param.set_digital_grad_accumulation(value)
+
+    def zero_grad(self, *args: Any, **kwargs: Any) -> None:
+        """Clear digital gradients and retained analog traces."""
+        super().zero_grad(*args, **kwargs)  # type: ignore[misc]
+        for group in self.param_groups:  # type: ignore[has-type]
+            for param in group["params"]:
+                if isinstance(param, AnalogContext):
+                    param.reset()
+
     @no_grad()
     def step(self, closure: Optional[Callable] = None, **kwargs: Any) -> Optional[float]:
         """Perform an analog-aware single optimization step.
@@ -89,6 +109,10 @@ class AnalogOptimizerMixin:
 
                     if analog_ctx.use_torch_update:
                         # In this case a separate weight parameter exists: do nothing.
+                        continue
+
+                    if getattr(analog_ctx, "digital_grad_accumulation", False):
+                        analog_ctx.reset()
                         continue
 
                     # Call `update` in the tile.

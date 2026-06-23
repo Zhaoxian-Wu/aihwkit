@@ -101,14 +101,21 @@ class AnalogFunction(Function):
                 analog_tile.update(input_, grad_output)
             analog_tile.reset_delta_weights()
         else:
-            # Store activation and errors for optimizer (for analog training)
-            analog_ctx.analog_input.append(input_)
-
-            if runtime.offload_gradient:
-                store_gradients = grad_output.cpu()
+            if getattr(analog_ctx, "digital_grad_accumulation", False):
+                if runtime.offload_input:
+                    input_ = input_.to(analog_tile.device)
+                if runtime.offload_gradient:
+                    grad_output = grad_output.to(analog_tile.device)
+                analog_ctx.accumulate_digital_gradient(input_, grad_output)
             else:
-                store_gradients = grad_output
-            analog_ctx.analog_grad_output.append(store_gradients)
+                # Store activation and errors for optimizer (for analog training)
+                analog_ctx.analog_input.append(input_)
+
+                if runtime.offload_gradient:
+                    store_gradients = grad_output.cpu()
+                else:
+                    store_gradients = grad_output
+                analog_ctx.analog_grad_output.append(store_gradients)
 
         ctx.saved_analog_tensors = []
         return None, None, grad_input, shared_weights_grad, None
