@@ -7,6 +7,7 @@
 #pragma once
 
 #include "cuda_buffer.h"
+#include "cuda_indexing.h"
 #include "utility_functions.h"
 
 #include <iostream>
@@ -179,7 +180,7 @@
   for (size_t i = blockIdx.x * blockDim.x + threadIdx.x; i < (n); i += blockDim.x * gridDim.x)
 
 #define RPU_CUDA_1D_KERNEL_LOOP_HALF(i, n)                                                         \
-  int size2 =                                                                                      \
+  size_t size2 =                                                                                   \
       ((n) + 1) / 2; /* CudaArray makes sure that last idx is dummy allocated for odd sizes*/      \
   RPU_CUDA_1D_KERNEL_LOOP(i, size2)
 
@@ -333,19 +334,19 @@ public:
 
   template <typename T = float>
   int getNBlocks(
-      int size, int nthreads = RPU_THREADS_PER_BLOCK, bool half_for_half_t = false) const {
+      size_t size, int nthreads = RPU_THREADS_PER_BLOCK, bool half_for_half_t = false) const {
 #ifdef RPU_USE_FP16
     if (std::is_same<T, half_t>::value && half_for_half_t) {
-      int size2 = (size + 1) / 2; // ceil
+      size_t size2 = (size + 1) / 2; // ceil
       nthreads = MIN(maxThreadsPerBlock(), nthreads);
-      return (size2 + nthreads - 1) / nthreads;
+      return RPU::cuda::checkedNBlocks(size2, nthreads);
     }
 #endif
     nthreads = MIN(maxThreadsPerBlock(), nthreads);
-    return (size + nthreads - 1) / nthreads;
+    return RPU::cuda::checkedNBlocks(size, nthreads);
   }
 
-  int getNStrideBlocks(int size, int nthreads = RPU_THREADS_PER_BLOCK) const;
+  int getNStrideBlocks(size_t size, int nthreads = RPU_THREADS_PER_BLOCK) const;
   inline int getNThreads() const { return MIN(RPU_THREADS_PER_BLOCK, maxThreadsPerBlock()); };
   inline int getNThreads(int n) const { return MIN((n + 31) / 32 * 32, getNThreads()); };
   inline cudaStream_t getStream() const {
@@ -365,8 +366,8 @@ public:
   inline int getGPUId() const { return gpu_id_; };
 
   void createRandomGenerator();
-  void randNormal(float *dev_array, int size, float mean = 0, float stddev = 1);
-  void randUniform(float *dev_array, int size);
+  void randNormal(float *dev_array, size_t size, float mean = 0, float stddev = 1);
+  void randUniform(float *dev_array, size_t size);
   void setRandomSeed(unsigned long long rseed);
 
   template <typename T> T *getSharedBuffer(int id, size_t size);
@@ -390,7 +391,7 @@ public:
   inline cudaEvent_t getEvent() const { return event_; };
   inline bool hasRandomGenerator() const { return rng_created_; };
 
-  curandState_t *getRandomStates(int size = 0);
+  curandState_t *getRandomStates(size_t size = 0);
 
 private:
   int gpu_id_ = 0;
@@ -427,8 +428,8 @@ template <typename T> class CudaArray {
 public:
   CudaArray() {};
   explicit CudaArray(CudaContextPtr c);
-  explicit CudaArray(CudaContextPtr c, int n);
-  explicit CudaArray(CudaContextPtr c, int n, const T *host_array);
+  explicit CudaArray(CudaContextPtr c, size_t n);
+  explicit CudaArray(CudaContextPtr c, size_t n, const T *host_array);
   CudaArray(CudaContextPtr c, const std::vector<T> &host_vector);
   ~CudaArray();
 
@@ -470,9 +471,9 @@ public:
   inline CudaContextPtr getContext() const { return context_; };
   inline void synchronize() { context_->synchronize(); };
 
-  inline int getSize() const { return size_; };
-  inline int getWidth() const { return width_; };
-  inline int getWidthBytes() const { return width_ * sizeof(T); };
+  inline size_t getSize() const { return size_; };
+  inline size_t getWidth() const { return width_; };
+  inline size_t getWidthBytes() const { return width_ * sizeof(T); };
   inline int getHeight() const { return height_; };
   inline size_t getPitch() const { return pitch_; };
   inline T *getData() { return values_; };
@@ -485,10 +486,10 @@ public:
 private:
   bool shared_if_ = false;
   T *values_ = nullptr;
-  int size_ = 0;
+  size_t size_ = 0;
   size_t pitch_ = 0;
-  int width_ = 0;
-  int mem_size_ = 0;
+  size_t width_ = 0;
+  size_t mem_size_ = 0;
   int height_ = 0;
 
   CudaContextPtr context_ = nullptr;
@@ -501,7 +502,7 @@ void curandSetup(CudaArray<curandState_t> &, unsigned long long rseed = 0, bool 
 void curandSetup(
     CudaContextPtr c,
     std::unique_ptr<CudaArray<curandState_t>> &dev_states,
-    int n,
+    size_t n,
     unsigned long long rseed = 0,
     bool same_seed = false);
 

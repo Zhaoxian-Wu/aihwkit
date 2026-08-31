@@ -29,7 +29,7 @@ template <typename T> T *CudaBuffer<T>::get(CudaContextPtr c, size_t size) {
 
   if (buffer_.numel() < size || c->getGPUId() != buffer_.device().index()) {
     // Build the buffers.
-    std::vector<int64_t> dims{(signed long)size};
+    std::vector<int64_t> dims{RPU::cuda::checkedInt64Size(size, "Torch CUDA buffer")};
     auto options = at::TensorOptions().device(at::kCUDA, c->getGPUId()).requires_grad(false);
 
 #ifdef RPU_DEFINE_CUDA_HALF_ARRAY

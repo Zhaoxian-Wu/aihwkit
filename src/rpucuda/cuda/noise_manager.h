@@ -74,7 +74,7 @@ private:
   NoiseManagementType nm_type_ = NoiseManagementType::None;
   int buffer_m_batch_ = 0;
   int last_m_batch_ = 0;
-  int size_ = 0;
+  size_t size_ = 0;
   CudaContextPtr context_ = nullptr;
   bool const_set_if_ = false;
   bool ravg_initialized_ = false;
@@ -87,7 +87,7 @@ private:
   std::unique_ptr<CudaArray<T>> dev_nsum_values_ = nullptr;
   std::unique_ptr<CudaArray<T>> dev_nsum_values0_ = nullptr;
 
-  std::unique_ptr<CudaArray<int>> dev_offsets_ = nullptr;
+  std::unique_ptr<CudaArray<uint64_t>> dev_offsets_ = nullptr;
 
   std::unique_ptr<CudaArray<char>> dev_v_temp_storage_ = nullptr;
   std::unique_ptr<CudaArray<char>> dev_m_temp_storage_ = nullptr;

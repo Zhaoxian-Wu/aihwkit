@@ -9,7 +9,8 @@ if(BUILD_TEST)
   ExternalProject_Add(GTest
     URL               https://github.com/google/googletest/archive/release-1.11.0.zip
     URL_HASH          MD5=52943a59cefce0ae0491d4d2412c120b
-    CMAKE_ARGS        "-DCMAKE_CXX_FLAGS=-D_GLIBCXX_USE_CXX11_ABI\=0"
+    CMAKE_ARGS        "-DCMAKE_CXX_FLAGS=-D_GLIBCXX_USE_CXX11_ABI\=${OUTPUT_GNU_ABI}"
+                      "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
     INSTALL_COMMAND   ""
     DOWNLOAD_EXTRACT_TIMESTAMP true
   )

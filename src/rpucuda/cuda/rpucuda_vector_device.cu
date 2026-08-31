@@ -166,7 +166,8 @@ void VectorRPUDeviceCuda<T>::populateFrom(const AbstractRPUDevice<T> &rpu_device
 
     // need to manually copy the big memory. Just use BLAS
     RPU::math::copy(
-        this->context_, tmp_weights.getSize(), tmp_weights.getData(), 1, dev_weights_ptrs_[k], 1);
+        this->context_, RPU::cuda::checkedIntSize(tmp_weights.getSize(), "cuBLAS copy"),
+        tmp_weights.getData(), 1, dev_weights_ptrs_[k], 1);
     this->context_->synchronize(); // to be safe
   }
 

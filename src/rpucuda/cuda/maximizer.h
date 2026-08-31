@@ -41,7 +41,7 @@ private:
   void initializeBatchBuffer(int m_batch);
 
   int buffer_m_batch_ = 0;
-  int size_ = 0;
+  size_t size_ = 0;
   CudaContextPtr context_ = nullptr;
 
   CustomMaxAbs max_abs_op_;
@@ -49,7 +49,7 @@ private:
 
   std::unique_ptr<CudaArray<T>> dev_max_values_ = nullptr;
   std::unique_ptr<CudaArray<T>> dev_max_values0_ = nullptr;
-  std::unique_ptr<CudaArray<int>> dev_offsets_ = nullptr;
+  std::unique_ptr<CudaArray<uint64_t>> dev_offsets_ = nullptr;
 
   std::unique_ptr<CudaArray<char>> dev_v_temp_storage_ = nullptr;
   std::unique_ptr<CudaArray<char>> dev_m_temp_storage_ = nullptr;

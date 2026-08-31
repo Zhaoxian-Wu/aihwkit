@@ -160,8 +160,9 @@ RPU_INSERT_UNIQUE_CUDA(half_t);
 #endif
 #undef RPU_INSERT_UNIQUE_CUDA
 
-__global__ void kernelCurandSetup(unsigned long long rseed, curandState_t *state, int n) {
-  int id = threadIdx.x + blockIdx.x * blockDim.x;
+__global__ void kernelCurandSetup(unsigned long long rseed, curandState_t *state, size_t n) {
+  size_t id = static_cast<size_t>(blockIdx.x) * static_cast<size_t>(blockDim.x) +
+              static_cast<size_t>(threadIdx.x);
   /* Each thread gets same seed, a different sequence
      number, no offset */
   if (id < n) {
@@ -169,8 +170,10 @@ __global__ void kernelCurandSetup(unsigned long long rseed, curandState_t *state
   }
 }
 
-__global__ void kernelCurandSetupSameSeed(unsigned long long rseed, curandState_t *state, int n) {
-  int id = threadIdx.x + blockIdx.x * blockDim.x;
+__global__ void kernelCurandSetupSameSeed(
+    unsigned long long rseed, curandState_t *state, size_t n) {
+  size_t id = static_cast<size_t>(blockIdx.x) * static_cast<size_t>(blockDim.x) +
+              static_cast<size_t>(threadIdx.x);
   if (id < n) {
     curand_init(rseed, 0, 0, &state[id]);
   }
@@ -185,7 +188,7 @@ void curandSetup(CudaArray<curandState_t> &dev_states, unsigned long long rseed,
     seed = rseed;
   }
   CudaContextPtr c = dev_states.getContext();
-  int m = dev_states.getSize();
+  size_t m = dev_states.getSize();
   int nthreads = c->getNThreads();
   int nblocks = c->getNBlocks(m, nthreads);
   if (same_seed) {
@@ -201,10 +204,13 @@ void curandSetup(CudaArray<curandState_t> &dev_states, unsigned long long rseed,
 void curandSetup(
     CudaContextPtr c,
     std::unique_ptr<CudaArray<curandState_t>> &dev_states,
-    int n,
+    size_t n,
     unsigned long long rseed,
     bool same_seed) {
-  int m = (n + 31) / 32 * 32;
+  if (n > std::numeric_limits<size_t>::max() - 31) {
+    throw std::overflow_error("CUDA random-state count overflows size_t during alignment");
+  }
+  size_t m = (n + 31) / 32 * 32;
   c->synchronizeDevice();
   dev_states = RPU::make_unique<CudaArray<curandState_t>>(c, m);
   curandSetup(*dev_states, rseed, same_seed);
@@ -649,7 +655,7 @@ void CudaContext::synchronizeStream() const {
   CUDA_CALL(cudaStreamSynchronize(streams_[stream_id_]));
 }
 
-int CudaContext::getNStrideBlocks(int size, int nthreads) const {
+int CudaContext::getNStrideBlocks(size_t size, int nthreads) const {
   DEBUG_ALL_OUT("get N Stride Blocks for  size " << size);
   nthreads = MIN(maxThreadsPerBlock(), nthreads);
   int max_blocks = getSMCount() * maxThreadsPerBlock() / nthreads;
@@ -754,7 +760,7 @@ void CudaContext::setRandomSeed(unsigned long long rseed) {
   this->synchronizeStream();
 }
 
-void CudaContext::randNormal(float *dev_array, int size, float mean, float stddev) {
+void CudaContext::randNormal(float *dev_array, size_t size, float mean, float stddev) {
   if (!rng_created_) {
     setRandomSeed(0); // will create random generator on the fly
   }
@@ -767,7 +773,7 @@ void CudaContext::randNormal(float *dev_array, int size, float mean, float stdde
   }
 }
 
-void CudaContext::randUniform(float *dev_array, int size) {
+void CudaContext::randUniform(float *dev_array, size_t size) {
 
   if (!rng_created_) {
     setRandomSeed(0);
@@ -776,11 +782,11 @@ void CudaContext::randUniform(float *dev_array, int size) {
   CURAND_CALL(curandGenerateUniform(rng_, dev_array, size));
 }
 
-curandState_t *CudaContext::getRandomStates(int size) {
+curandState_t *CudaContext::getRandomStates(size_t size) {
 
-  int n = size;
-  if (n <= 0) {
-    n = getSMCount() * maxThreadsPerBlock();
+  size_t n = size;
+  if (n == 0) {
+    n = static_cast<size_t>(getSMCount()) * maxThreadsPerBlock();
   }
 
   auto *rs = &random_states_;
@@ -968,20 +974,24 @@ template <typename T>
 CudaArray<T>::CudaArray(CudaContextPtr c)
     : size_(0), width_(0), height_(1), pitch_(0), context_(c) {}
 
-template <typename T> CudaArray<T>::CudaArray(CudaContextPtr c, int n) : CudaArray(c) {
+template <typename T> CudaArray<T>::CudaArray(CudaContextPtr c, size_t n) : CudaArray(c) {
   size_ = n;
   width_ = n;
   height_ = 1; // this needs to be one! No height>1 supported yet
   if (n > 0) {
     context_->enforceDeviceId();
-    mem_size_ = (size_ * sizeof(T) + 3) / 4 * 4; // align on 32-bit word
+    const size_t byte_size = RPU::cuda::checkedSizeProduct(size_, sizeof(T), "CUDA allocation");
+    if (byte_size > std::numeric_limits<size_t>::max() - 3) {
+      throw std::overflow_error("CUDA allocation alignment overflows size_t");
+    }
+    mem_size_ = (byte_size + 3) / 4 * 4; // align on 32-bit word
     CUDA_CALL(cudaMallocPitch(&values_, &pitch_, mem_size_, height_));
     ADDTOMEMCOUNTER(mem_size_);
   }
 }
 
 template <typename T>
-CudaArray<T>::CudaArray(CudaContextPtr c, int n, const T *host_array) : CudaArray(c, n) {
+CudaArray<T>::CudaArray(CudaContextPtr c, size_t n, const T *host_array) : CudaArray(c, n) {
   if (n > 0) {
     this->assign(host_array);
     context_->synchronize(); // better syncrhonize. Constructing is considered slow anyway
@@ -1091,7 +1101,10 @@ template <typename T> void CudaArray<T>::setConst(T set_value) {
   if (size_ > 0) {
     context_->enforceDeviceId();
     if (set_value != (T)0.0) {
-      RPU::math::elemconst(context_, values_, size_, set_value);
+      for (const auto &chunk : RPU::cuda::planIndexChunks(size_)) {
+        RPU::math::elemconst(
+            context_, values_ + chunk.offset, static_cast<int>(chunk.size), set_value);
+      }
     } else {
       CUDA_CALL(cudaMemset2DAsync(
           values_, pitch_, 0, this->getWidthBytes(), height_, context_->getStream()));
@@ -1121,8 +1134,9 @@ template <> void CudaArray<float *>::setConst(float *set_value) {
 template <typename T> void CudaArray<T>::printValues(int nmax) const {
   T *values = new T[size_];
   this->copyTo(values); // will synchronize
-  int n = nmax > 0 ? MIN(nmax, size_) : size_;
-  for (int i = 0; i < n; ++i) {
+  size_t n =
+      nmax > 0 ? MIN(RPU::cuda::checkedPositiveSize(nmax, "print limit"), size_) : size_;
+  for (size_t i = 0; i < n; ++i) {
     std::cout << "[" << i << "]:" << values[i] << ", ";
   }
   if (n < size_) {
@@ -1135,8 +1149,8 @@ template <typename T> void CudaArray<T>::printValues(int nmax) const {
 template <typename T> void CudaArray<T>::printMatrixValues(int first_size) const {
   T *values = new T[size_];
   this->copyTo(values); // will synchronize
-  int n = size_;
-  for (int i = 0; i < n; ++i) {
+  size_t n = size_;
+  for (size_t i = 0; i < n; ++i) {
     if (i % first_size == 0) {
       std::cout << std::endl << "[" << i << "]:\t";
     }
@@ -1149,8 +1163,9 @@ template <typename T> void CudaArray<T>::printMatrixValues(int first_size) const
 template <typename T> void CudaArray<T>::printNZValues(int nmax) const {
   T *values = new T[size_];
   this->copyTo(values); // will synchronize
-  int n = nmax > 0 ? MIN(nmax, size_) : size_;
-  for (int i = 0; i < n; ++i) {
+  size_t n =
+      nmax > 0 ? MIN(RPU::cuda::checkedPositiveSize(nmax, "print limit"), size_) : size_;
+  for (size_t i = 0; i < n; ++i) {
     if (values[i] != (T)0) {
       std::cout << "[" << i << "]:" << values[i] << ", ";
     }
@@ -1175,8 +1190,9 @@ template <> void CudaArray<curandStateXORWOW>::printMatrixValues(int first_size)
 template <> void CudaArray<int8_t>::printValues(int nmax) const {
   int8_t *values = new int8_t[size_];
   this->copyTo(values); // will synchronize
-  int n = nmax > 0 ? MIN(nmax, size_) : size_;
-  for (int i = 0; i < n; ++i) {
+  size_t n =
+      nmax > 0 ? MIN(RPU::cuda::checkedPositiveSize(nmax, "print limit"), size_) : size_;
+  for (size_t i = 0; i < n; ++i) {
     std::cout << "[" << i << "]:" << static_cast<int>(values[i]) << ", ";
   }
   if (n < size_) {
@@ -1189,8 +1205,9 @@ template <> void CudaArray<int8_t>::printValues(int nmax) const {
 template <> void CudaArray<int8_t>::printNZValues(int nmax) const {
   int8_t *values = new int8_t[size_];
   this->copyTo(values); // will synchronize
-  int n = nmax > 0 ? MIN(nmax, size_) : size_;
-  for (int i = 0; i < n; ++i) {
+  size_t n =
+      nmax > 0 ? MIN(RPU::cuda::checkedPositiveSize(nmax, "print limit"), size_) : size_;
+  for (size_t i = 0; i < n; ++i) {
     if (values[i] != 0) {
       std::cout << "[" << i << "]:" << static_cast<int>(values[i]) << ", ";
     }
@@ -1205,8 +1222,8 @@ template <> void CudaArray<int8_t>::printNZValues(int nmax) const {
 template <> void CudaArray<int8_t>::printMatrixValues(int first_size) const {
   int8_t *values = new int8_t[size_];
   this->copyTo(values); // will synchronize
-  int n = size_;
-  for (int i = 0; i < n; ++i) {
+  size_t n = size_;
+  for (size_t i = 0; i < n; ++i) {
     if (i % first_size == 0) {
       std::cout << std::endl << "[" << i << "]:\t";
     }
@@ -1220,8 +1237,9 @@ template <> void CudaArray<int8_t>::printMatrixValues(int first_size) const {
 template <> void CudaArray<half_t>::printValues(int nmax) const {
   half_t *values = new half_t[size_];
   this->copyTo(values); // will synchronize
-  int n = nmax > 0 ? MIN(nmax, size_) : size_;
-  for (int i = 0; i < n; ++i) {
+  size_t n =
+      nmax > 0 ? MIN(RPU::cuda::checkedPositiveSize(nmax, "print limit"), size_) : size_;
+  for (size_t i = 0; i < n; ++i) {
     std::cout << "[" << i << "]:" << static_cast<float>(values[i]) << ", ";
   }
   if (n < size_) {
@@ -1234,8 +1252,9 @@ template <> void CudaArray<half_t>::printValues(int nmax) const {
 template <> void CudaArray<half_t>::printNZValues(int nmax) const {
   half_t *values = new half_t[size_];
   this->copyTo(values); // will synchronize
-  int n = nmax > 0 ? MIN(nmax, size_) : size_;
-  for (int i = 0; i < n; ++i) {
+  size_t n =
+      nmax > 0 ? MIN(RPU::cuda::checkedPositiveSize(nmax, "print limit"), size_) : size_;
+  for (size_t i = 0; i < n; ++i) {
     if (values[i] != (half_t)0.0) {
       std::cout << "[" << i << "]:" << static_cast<float>(values[i]) << ", ";
     }
@@ -1250,8 +1269,8 @@ template <> void CudaArray<half_t>::printNZValues(int nmax) const {
 template <> void CudaArray<half_t>::printMatrixValues(int first_size) const {
   half_t *values = new half_t[size_];
   this->copyTo(values); // will synchronize
-  int n = size_;
-  for (int i = 0; i < n; ++i) {
+  size_t n = size_;
+  for (size_t i = 0; i < n; ++i) {
     if (i % first_size == 0) {
       std::cout << std::endl << "[" << i << "]:\t";
     }
@@ -1264,7 +1283,7 @@ template <> void CudaArray<half_t>::printMatrixValues(int first_size) const {
 #endif
 
 template <typename T> void CudaArray<T>::assign(const T *host_array) {
-  int sz = size_ * sizeof(T);
+  size_t sz = size_ * sizeof(T);
   DEBUG_ALL_OUT(
       "Assign host (hsize,P,W,H): " << sz << ", " << pitch_ << ", " << this->getWidthBytes() << ", "
                                     << height_);
@@ -1283,17 +1302,19 @@ void CudaArray<T>::assignTranspose(const T *host_array, const int m, const int n
     return;
   }
 
-  if (m * n != size_) {
+  if (RPU::cuda::checkedPositiveProduct(m, n, "transpose assignment") != size_) {
     RPU_FATAL("Size mismatch");
   }
+  const size_t rows = RPU::cuda::checkedPositiveSize(m, "transpose rows");
+  const size_t columns = RPU::cuda::checkedPositiveSize(n, "transpose columns");
   T *transposed_array = new T[size_];
-  for (int i = 0; i < size_; i++) {
-    int i_col = (i % n);
-    int i_row = (i / n);
-    transposed_array[i_col * m + i_row] = host_array[i];
+  for (size_t i = 0; i < size_; i++) {
+    size_t i_col = i % columns;
+    size_t i_row = i / columns;
+    transposed_array[i_col * rows + i_row] = host_array[i];
   }
   context_->enforceDeviceId();
-  int sz = size_ * sizeof(T);
+  size_t sz = size_ * sizeof(T);
   DEBUG_ALL_OUT(
       "Assign host (hsize,P,W,H): " << sz << ", " << pitch_ << ", " << this->getWidthBytes() << ", "
                                     << height_);
@@ -1324,7 +1345,7 @@ template <typename T> void CudaArray<T>::assignFromDevice(const T *device_array)
       "Assign device (S, P,W,H): " << size_ << ", " << pitch_ << ", " << width_ * sizeof(T) << ", "
                                    << height_);
   if ((size_ > 0)) {
-    int sz = size_ * sizeof(T);
+    size_t sz = size_ * sizeof(T);
     cudaStream_t s = context_->getStream();
     context_->synchronizeDevice(); // better do device-wide. Not clear where the device array lives
     CUDA_CALL(
@@ -1353,7 +1374,7 @@ template <typename T> void CudaArray<T>::setShared(T *device_array) {
 
 template <typename T> void CudaArray<T>::copyTo(T *host_array) const {
 
-  int sz = size_ * sizeof(T);
+  size_t sz = size_ * sizeof(T);
   DEBUG_ALL_OUT(
       "Copy to host (hsize,P,W,H): " << sz << ", " << pitch_ << ", " << this->getWidthBytes()
                                      << ", " << height_);

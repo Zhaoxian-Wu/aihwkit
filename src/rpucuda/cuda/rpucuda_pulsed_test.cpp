@@ -530,7 +530,7 @@ TYPED_TEST(RPUCudaPulsedTestFixtureNoNoise, ForwardIndexedNoNoise) {
     this->layer_pulsed->forwardTensor(
         indexed_input, this->d2.data(), false, this->m, this->dim3, trans, this->is_test);
     // std::cout << "\nCPU Indexed (" << trans << "):";
-    for (int i = 0; i < d_cuvec_batch2.getSize(); i++) {
+    for (size_t i = 0; i < d_cuvec_batch2.getSize(); i++) {
       ASSERT_FLOAT_EQ(this->d1[i], this->d2[i]);
     }
     // std::cout << "  success!\n";
@@ -553,7 +553,7 @@ TYPED_TEST(RPUCudaPulsedTestFixtureNoNoise, ForwardIndexedNoNoise) {
     this->d_cuvec_batch->copyTo(this->d1.data());
     d_cuvec_batch2.copyTo(this->d2.data()); // indexed version
 
-    for (int i = 0; i < d_cuvec_batch2.getSize(); i++) {
+    for (size_t i = 0; i < d_cuvec_batch2.getSize(); i++) {
       ASSERT_FLOAT_EQ(this->d1[i], this->d2[i]);
     }
   }

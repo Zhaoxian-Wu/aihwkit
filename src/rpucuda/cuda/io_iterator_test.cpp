@@ -13,15 +13,28 @@
 #include <chrono>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <numeric>
 #include <random>
+#include <type_traits>
 
 #define TOLERANCE 1e-5
 
 namespace {
 
 using namespace RPU;
+
+TEST(IoIteratorIndexingTest, EyeIteratorKeepsOffsetsBeyondInt32) {
+  static_assert(
+      std::is_same<EyeInputIterator<float>::difference_type, index_t>::value,
+      "CUDA input iterators must expose a 64-bit difference type");
+
+  EyeInputIterator<float> iterator(3, 0);
+  const index_t index = static_cast<index_t>(std::numeric_limits<int>::max()) + 7;
+
+  EXPECT_FLOAT_EQ(iterator[index], 1.0F);
+}
 
 template <typename T> class IteratorTestFixture : public ::testing::Test {
 public:

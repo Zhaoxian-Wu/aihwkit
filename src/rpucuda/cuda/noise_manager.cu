@@ -29,7 +29,7 @@ template <typename T> struct NonZeroFunctor {
 template <typename T>
 __global__ void kernelAbsMaxNPSum(
     T *scale_values,
-    const int m_batch,
+    const size_t m_batch,
     const T *amax_values,
     const T *psum_values,
     const T *nsum_values,
@@ -38,7 +38,8 @@ __global__ void kernelAbsMaxNPSum(
     const T bm_max // io.max_bm_res/io.inp_res
 
 ) {
-  int tid = blockDim.x * blockIdx.x + threadIdx.x;
+  size_t tid = static_cast<size_t>(blockDim.x) * static_cast<size_t>(blockIdx.x) +
+               static_cast<size_t>(threadIdx.x);
 
   if (tid < m_batch) {
     // w_max*MAX(psum,nsum)/out_bound < scale
@@ -55,8 +56,8 @@ __global__ void kernelAbsMaxNPSum(
 template <typename InputIteratorT, typename T>
 __global__ void kernelNPSumBatchTrans(
     InputIteratorT input,
-    const int total_size_in,
-    const int m_batch_in,
+    const size_t total_size_in,
+    const size_t m_batch,
     T *psum_values,
     T *nsum_values,
     T *psum_values0,
@@ -65,7 +66,8 @@ __global__ void kernelNPSumBatchTrans(
   // -- only use this version if m_batch < blockDim.x !!!
   // -- probably: strided version would be faster...
 
-  int tid = blockDim.x * blockIdx.x + threadIdx.x;
+  size_t tid = static_cast<size_t>(blockDim.x) * static_cast<size_t>(blockIdx.x) +
+               static_cast<size_t>(threadIdx.x);
   // assumes that shared is of size 2*nthreads*sizeof(T) !!!!!!!!!!
   extern __shared__ __align__(sizeof(double)) unsigned char rpu_smem_nm[];
   T *block_sum_values = reinterpret_cast<T *>(rpu_smem_nm);
@@ -73,9 +75,7 @@ __global__ void kernelNPSumBatchTrans(
   T *block_psum_values = &block_sum_values[0];
   T *block_nsum_values = &block_sum_values[blockDim.x];
 
-  const int size = total_size_in;
-  const int m_batch = m_batch_in;
-
+  const size_t size = total_size_in;
   block_psum_values[threadIdx.x] = (T)0.0;
   block_nsum_values[threadIdx.x] = (T)0.0;
 
@@ -89,7 +89,7 @@ __global__ void kernelNPSumBatchTrans(
   if (tid < size) {
 
     T value = input[tid];
-    int midx = tid % m_batch;
+    size_t midx = tid % m_batch;
 
     if (value >= (T)0.0) {
       atomicAdd(&(block_psum_values[midx]), value);
@@ -99,7 +99,7 @@ __global__ void kernelNPSumBatchTrans(
   }
   __syncthreads();
 
-  int bidx = threadIdx.x;
+  size_t bidx = threadIdx.x;
   if (bidx < m_batch) {
     atomicAdd(&(psum_values[bidx]), block_psum_values[bidx]);
     atomicAdd(&(nsum_values[bidx]), block_nsum_values[bidx]);
@@ -109,8 +109,8 @@ __global__ void kernelNPSumBatchTrans(
 template <typename InputIteratorT, typename T>
 __global__ void kernelNPSumBatchTrans_LargeBatch(
     InputIteratorT input,
-    const int total_size_in,
-    const int m_batch_in,
+    const size_t total_size_in,
+    const size_t m_batch,
     T *psum_values,
     T *nsum_values,
     T *psum_values0,
@@ -119,11 +119,10 @@ __global__ void kernelNPSumBatchTrans_LargeBatch(
   // -- use this version if m_batch >= blockDim.x
   // -- just uses atomic on global memory
 
-  int tid = blockDim.x * blockIdx.x + threadIdx.x;
+  size_t tid = static_cast<size_t>(blockDim.x) * static_cast<size_t>(blockIdx.x) +
+               static_cast<size_t>(threadIdx.x);
 
-  const int size = total_size_in;
-  const int m_batch = m_batch_in;
-
+  const size_t size = total_size_in;
   if (tid < m_batch) {
     psum_values0[tid] = (T)0.0;
     nsum_values0[tid] = (T)0.0;
@@ -132,7 +131,7 @@ __global__ void kernelNPSumBatchTrans_LargeBatch(
   if (tid < size) {
 
     T value = input[tid];
-    int midx = tid % m_batch;
+    size_t midx = tid % m_batch;
 
     if (value >= (T)0.0) {
       atomicAdd(&psum_values[midx], value);
@@ -144,9 +143,9 @@ __global__ void kernelNPSumBatchTrans_LargeBatch(
 
 template <typename T>
 __global__ void kernelAverageAbsMaxSetScales(
-    T *scales, T *ravg, const T *sum, const int m_batch_in, T decay_rate_in) {
-  int tid = blockDim.x * blockIdx.x + threadIdx.x;
-  const int m_batch = m_batch_in;
+    T *scales, T *ravg, const T *sum, const size_t m_batch, T decay_rate_in) {
+  size_t tid = static_cast<size_t>(blockDim.x) * static_cast<size_t>(blockIdx.x) +
+               static_cast<size_t>(threadIdx.x);
   T decay_rate = decay_rate_in;
   T max_avg = (*sum) / (T)m_batch;
   T run_avg = *ravg;
@@ -161,7 +160,7 @@ __global__ void kernelAverageAbsMaxSetScales(
 
 template <typename T>
 __global__ void kernelAverageAbsMaxSingleMomentum(
-    T *ravg, const T *sum, const int m_batch, const T *nz_value, T decay_rate) {
+    T *ravg, const T *sum, const size_t m_batch, const T *nz_value, T decay_rate) {
   // just single block!
   int tid = blockDim.x * blockIdx.x + threadIdx.x;
   if (tid == 0) {
@@ -192,7 +191,8 @@ __global__ void kernelAbsMaxSingleMomentum(T *ravg, const T *amax, T decay_rate)
 
 template <typename T>
 NoiseManager<T>::NoiseManager(CudaContextPtr c, int size)
-    : size_(size), context_(c), buffer_m_batch_(0), last_m_batch_(0), const_set_if_(false) {
+    : size_(RPU::cuda::checkedPositiveSize(size, "noise-manager size")), context_(c),
+      buffer_m_batch_(0), last_m_batch_(0), const_set_if_(false) {
   // initialize for m_batch=1
   dev_scale_values_ = RPU::make_unique<CudaArray<T>>(context_, 1);
   dev_psum_values_ = RPU::make_unique<CudaArray<T>>(context_, 1);
@@ -218,6 +218,8 @@ template <typename T> void NoiseManager<T>::initializeBatchBuffer(int m_batch) {
 
   if ((m_batch > 1) && (buffer_m_batch_ < m_batch)) {
     buffer_m_batch_ = m_batch;
+    const size_t offset_count =
+        RPU::cuda::checkedPositiveSize(m_batch, "noise-manager batch buffer") + 1;
 
     dev_psum_values_ = RPU::make_unique<CudaArray<T>>(context_, m_batch);
     dev_psum_values0_ = RPU::make_unique<CudaArray<T>>(context_, m_batch);
@@ -227,14 +229,14 @@ template <typename T> void NoiseManager<T>::initializeBatchBuffer(int m_batch) {
     dev_nsum_values0_ = RPU::make_unique<CudaArray<T>>(context_, m_batch);
     dev_nsum_values0_->setConst((T)0.0);
 
-    int *offsets = new int[m_batch + 1];
+    uint64_t *offsets = new uint64_t[offset_count];
 
     // not trans
-    for (int i = 0; i <= m_batch; i++) {
-      offsets[i] = i * size_;
+    for (size_t i = 0; i < offset_count; i++) {
+      offsets[i] = static_cast<uint64_t>(i * size_);
     }
 
-    dev_offsets_ = RPU::make_unique<CudaArray<int>>(context_, m_batch + 1, offsets);
+    dev_offsets_ = RPU::make_unique<CudaArray<uint64_t>>(context_, offset_count, offsets);
 
     size_t temp_storage_bytes = 0;
     RPU_CUB_NS_QUALIFIER DeviceSegmentedReduce::Reduce(
@@ -314,7 +316,8 @@ void NoiseManager<T>::computeNPSum(InputIteratorT dev_input, int m_batch, bool t
       std::swap(dev_nsum_values_, dev_nsum_values0_);
 
       int nthreads = context_->getNThreads();
-      int n = size_ * m_batch;
+      (void)RPU::cuda::checkedPositiveSize(m_batch, "noise-manager batch");
+      size_t n = RPU::cuda::checkedSizeProduct(size_, m_batch, "noise-manager input");
       int nblocks = context_->getNBlocks(n, nthreads);
       if (m_batch <= nthreads) {
         int shared_mem = 2 * nthreads * sizeof(T);
@@ -369,8 +372,8 @@ void NoiseManager<T>::compute(
     bool trans,
     bool is_test) {
 
-  // does not check for positive m_batch!
   nm_type_ = nm_type;
+  (void)RPU::cuda::checkedPositiveSize(m_batch, "noise-manager batch");
 
   switch (nm_type_) {
 

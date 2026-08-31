@@ -790,7 +790,7 @@ template <typename T> void RPUCudaSimple<T>::diffuseWeightsPink() {
     return;
   }
 
-  int size = dev_weights_->getSize();
+  size_t size = dev_weights_->getSize();
 
   if (dev_flicker_states_ == nullptr) {
     uint64_t *init_flicker_states = RPUSimple<T>::initFlickerStates();

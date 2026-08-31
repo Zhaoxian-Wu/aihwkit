@@ -6,16 +6,19 @@
 
 #pragma once
 
+#include "cuda_indexing.h"
 #include "cuda_math_util.h"
 #include <iterator>
 
 namespace RPU {
 
-struct BatchSkipper {
-  explicit BatchSkipper(int skip) : skip_(skip) {};
+using cuda::index_t;
 
-  __device__ __forceinline__ int operator()(const int &a) const { return int(a * skip_); }
-  int skip_ = 1;
+struct BatchSkipper {
+  explicit BatchSkipper(index_t skip) : skip_(skip) {};
+
+  __device__ __forceinline__ index_t operator()(const index_t &a) const { return a * skip_; }
+  index_t skip_ = 1;
 };
 
 template <typename T> struct Power2 {
@@ -26,19 +29,19 @@ template <typename T> class LogInputIterator {
 
 public:
   typedef LogInputIterator<T> self_type;
-  typedef int difference_type;
+  typedef index_t difference_type;
   typedef T value_type;
   typedef T *pointer;
   typedef T reference;
   typedef std::input_iterator_tag iterator_category;
 
   __host__ __device__ __forceinline__ LogInputIterator(const T *data) { data_ = data; }
-  __host__ __device__ __forceinline__ T operator[](int idx) const {
+  __host__ __device__ __forceinline__ T operator[](index_t idx) const {
     T x = data_[idx];
     return (x > (T)0.0) ? (T)__logf((T)x) : (T)0.0;
   }
 
-  __host__ __device__ __forceinline__ self_type operator+(int n) const {
+  __host__ __device__ __forceinline__ self_type operator+(index_t n) const {
     self_type retval(data_ + n);
     return retval;
   }
@@ -49,16 +52,16 @@ template <typename T> class NegateInputIterator {
 
 public:
   typedef NegateInputIterator<T> self_type;
-  typedef int difference_type;
+  typedef index_t difference_type;
   typedef T value_type;
   typedef T *pointer;
   typedef T reference;
   typedef std::input_iterator_tag iterator_category;
 
   __host__ __device__ __forceinline__ NegateInputIterator(const T *data) { data_ = data; }
-  __host__ __device__ __forceinline__ T operator[](int idx) const { return -data_[idx]; }
+  __host__ __device__ __forceinline__ T operator[](index_t idx) const { return -data_[idx]; }
 
-  __host__ __device__ __forceinline__ self_type operator+(int n) const {
+  __host__ __device__ __forceinline__ self_type operator+(index_t n) const {
     self_type retval(data_ + n);
     return retval;
   }
@@ -68,7 +71,7 @@ public:
 template <typename T> class IndicatorInputIterator {
 public:
   typedef IndicatorInputIterator<T> self_type;
-  typedef int difference_type;
+  typedef index_t difference_type;
   typedef T value_type;
   typedef T *pointer;
   typedef T reference;
@@ -80,11 +83,11 @@ public:
     indicator_ = indicator;
     scale_ = scale;
   }
-  __host__ __device__ __forceinline__ T operator[](int idx) const {
+  __host__ __device__ __forceinline__ T operator[](index_t idx) const {
     return static_cast<T>(data_[idx] == indicator_) * scale_;
   }
 
-  __host__ __device__ __forceinline__ self_type operator+(int n) const {
+  __host__ __device__ __forceinline__ self_type operator+(index_t n) const {
     self_type retval(data_ + n, indicator_, scale_);
     return retval;
   }
@@ -96,14 +99,15 @@ public:
 template <typename T, typename DataT> class DiagInputIterator {
 public:
   typedef DiagInputIterator<T, DataT> self_type;
-  typedef int difference_type;
+  typedef index_t difference_type;
   typedef T value_type;
   typedef T *pointer;
   typedef T reference;
   typedef std::input_iterator_tag iterator_category;
 
   __host__ __device__ __forceinline__
-  DiagInputIterator(const DataT *data, int dim, int offset, int diag_offset = 0) {
+  DiagInputIterator(
+      const DataT *data, index_t dim, index_t offset, index_t diag_offset = 0) {
     data_ = data;
     dim_ = dim;
     dim2_ = dim * dim;
@@ -111,49 +115,51 @@ public:
     diag_offset_ = diag_offset;
   }
 
-  __host__ __device__ __forceinline__ T operator[](int idx) const {
-    int i = (idx + offset_) % dim2_;
-    int j = (diag_offset_ != 0) ? (((idx + offset_ + diag_offset_ * dim_) % dim2_) / dim_) % dim_
-                                : (i / dim_) % dim_;
+  __host__ __device__ __forceinline__ T operator[](index_t idx) const {
+    index_t i = (idx + offset_) % dim2_;
+    index_t j =
+        (diag_offset_ != 0)
+            ? (((idx + offset_ + diag_offset_ * dim_) % dim2_) / dim_) % dim_
+            : (i / dim_) % dim_;
 
     return (i % dim_ == i / dim_) ? static_cast<T>(data_[j]) : static_cast<T>(0);
   }
-  __host__ __device__ __forceinline__ self_type operator+(int shift_n) const {
+  __host__ __device__ __forceinline__ self_type operator+(index_t shift_n) const {
     self_type retval(data_, dim_, shift_n + offset_, diag_offset_);
     return retval;
   }
 
   const DataT *data_;
-  int dim_, dim2_;
-  int offset_;
-  int diag_offset_;
+  index_t dim_, dim2_;
+  index_t offset_;
+  index_t diag_offset_;
 };
 
 template <typename T> class EyeInputIterator {
 public:
   typedef EyeInputIterator<T> self_type;
-  typedef int difference_type;
+  typedef index_t difference_type;
   typedef T value_type;
   typedef T *pointer;
   typedef T reference;
   typedef std::input_iterator_tag iterator_category;
 
-  __host__ __device__ __forceinline__ EyeInputIterator(const int n, const int offset) {
+  __host__ __device__ __forceinline__ EyeInputIterator(index_t n, index_t offset) {
     n_ = n;
     n2_ = n * n;
     offset_ = offset;
   }
-  __host__ __device__ __forceinline__ T operator[](int idx) const {
-    int i = (idx + offset_) % n2_;
+  __host__ __device__ __forceinline__ T operator[](index_t idx) const {
+    index_t i = (idx + offset_) % n2_;
     return static_cast<T>(i % n_ == i / n_);
   }
 
-  __host__ __device__ __forceinline__ self_type operator+(int shift_n) const {
+  __host__ __device__ __forceinline__ self_type operator+(index_t shift_n) const {
     self_type retval(n_, shift_n + offset_);
     return retval;
   }
-  int n_, n2_;
-  int offset_;
+  index_t n_, n2_;
+  index_t offset_;
 };
 
 // Iterators
@@ -161,41 +167,45 @@ template <typename T> class IndexReaderInputIterator {
 
 public:
   typedef IndexReaderInputIterator<T> self_type;
-  typedef int difference_type;
+  typedef index_t difference_type;
   typedef T value_type;
   typedef T *pointer;
   typedef T reference;
   typedef std::input_iterator_tag iterator_category;
 
   __host__ __device__ __forceinline__ IndexReaderInputIterator(
-      const T *data, const int *indices, int input_matrix_size, int M, int offset = 0) {
+      const T *data,
+      const int *indices,
+      index_t input_matrix_size,
+      index_t M,
+      index_t offset = 0) {
     data_ = data;
     M_ = M;                                 // xsize*m_batch [output_matrix_size]
     input_matrix_size_ = input_matrix_size; // dimension to repmat
     indices_ = indices;
     offset_ = offset;
   }
-  __host__ __device__ __forceinline__ T operator[](int idx_in) const {
-    int idx = idx_in + offset_;
+  __host__ __device__ __forceinline__ T operator[](index_t idx_in) const {
+    index_t idx = idx_in + offset_;
     int j = indices_[idx % M_];
     return (j <= 1) ? (T)j : data_[(j - 2) + idx / M_ * input_matrix_size_];
   }
 
-  __host__ __device__ __forceinline__ self_type operator+(int n) const {
+  __host__ __device__ __forceinline__ self_type operator+(index_t n) const {
     self_type retval(data_, indices_, input_matrix_size_, M_, offset_ + n);
     return retval;
   }
 
   const T *data_;
   const int *indices_;
-  int M_, input_matrix_size_, offset_;
+  index_t M_, input_matrix_size_, offset_;
 };
 
 template <typename T> class IndexReaderTransInputIterator {
 
 public:
   typedef IndexReaderTransInputIterator<T> self_type;
-  typedef int difference_type;
+  typedef index_t difference_type;
   typedef T value_type;
   typedef T *pointer;
   typedef T reference;
@@ -204,11 +214,11 @@ public:
   __host__ __device__ __forceinline__ IndexReaderTransInputIterator(
       const T *data,
       const int *indices,
-      int input_matrix_size,
-      int m,
-      int M,
-      int L,
-      int offset = 0) {
+      index_t input_matrix_size,
+      index_t m,
+      index_t M,
+      index_t L,
+      index_t offset = 0) {
     data_ = data;
     M_ = M; // m_batch*[x_]size
     input_matrix_size_ = input_matrix_size;
@@ -218,36 +228,37 @@ public:
     offset_ = offset;
   }
 
-  __host__ __device__ __forceinline__ T operator[](int idx_in) const {
+  __host__ __device__ __forceinline__ T operator[](index_t idx_in) const {
     // here we additioanlly permute 132
-    int idx = idx_in + offset_;
-    int i = (idx % L_) / m_ * M_ + (idx % m_) + idx / L_ * m_;
+    index_t idx = idx_in + offset_;
+    index_t i = (idx % L_) / m_ * M_ + (idx % m_) + idx / L_ * m_;
     int j = indices_[i % M_];
     return (j <= 1) ? (T)j : data_[(j - 2) + i / M_ * input_matrix_size_];
   }
 
-  __host__ __device__ __forceinline__ self_type operator+(int n) const {
+  __host__ __device__ __forceinline__ self_type operator+(index_t n) const {
     self_type retval(data_, indices_, input_matrix_size_, m_, M_, L_, offset_ + n);
     return retval;
   }
 
   const T *data_;
   const int *indices_; // need to be T as well...
-  int M_, L_, m_, input_matrix_size_, offset_;
+  index_t M_, L_, m_, input_matrix_size_, offset_;
 };
 
 template <typename T> class PermuterTransInputIterator {
 
 public:
   typedef PermuterTransInputIterator<T> self_type;
-  typedef int difference_type;
+  typedef index_t difference_type;
   typedef T value_type;
   typedef T *pointer;
   typedef T reference;
   typedef std::input_iterator_tag iterator_category;
 
   __host__ __device__ __forceinline__
-  PermuterTransInputIterator(const T *data, int m, int M, int L, int offset = 0) {
+  PermuterTransInputIterator(
+      const T *data, index_t m, index_t M, index_t L, index_t offset = 0) {
     data_ = data;
     M_ = M; // m_batch*[xd_]size // is already for reverse because of output
     m_ = m; // m_batch
@@ -255,19 +266,19 @@ public:
     offset_ = offset;
   }
 
-  __host__ __device__ __forceinline__ T operator[](int idx_in) const {
-    int idx = idx_in + offset_;
-    int i = (idx % L_) / m_ * M_ + (idx % m_) + idx / L_ * m_;
+  __host__ __device__ __forceinline__ T operator[](index_t idx_in) const {
+    index_t idx = idx_in + offset_;
+    index_t i = (idx % L_) / m_ * M_ + (idx % m_) + idx / L_ * m_;
     return data_[i];
   }
 
-  __host__ __device__ __forceinline__ self_type operator+(int n) const {
+  __host__ __device__ __forceinline__ self_type operator+(index_t n) const {
     self_type retval(data_, m_, M_, L_, offset_ + n);
     return retval;
   }
 
   const T *data_;
-  int M_, L_, m_, offset_;
+  index_t M_, L_, m_, offset_;
 };
 
 template <typename T> class PermuterTransOutputIterator {
@@ -286,20 +297,21 @@ private:
   };
 
 public:
-  __host__ __device__ __forceinline__ PermuterTransOutputIterator(T *data, int m, int M, int L) {
+  __host__ __device__ __forceinline__ PermuterTransOutputIterator(
+      T *data, index_t m, index_t M, index_t L) {
     data_ = data;
     M_ = M; // m_batch*[xd_]size // is already for reverse because of output
     m_ = m; // m_batch
     L_ = L; // m_batch*dim3
   }
 
-  __host__ __device__ __forceinline__ Reference operator[](int idx) const {
-    int i = (idx % L_) / m_ * M_ + (idx % m_) + idx / L_ * m_;
+  __host__ __device__ __forceinline__ Reference operator[](index_t idx) const {
+    index_t i = (idx % L_) / m_ * M_ + (idx % m_) + idx / L_ * m_;
     return Reference(data_ + i);
   }
 
   T *data_;
-  int M_, L_, m_;
+  index_t M_, L_, m_;
 };
 
 template <typename T> class IndexReaderOutputIterator {
@@ -320,16 +332,17 @@ private:
 
 public:
   __host__ __device__ __forceinline__
-  IndexReaderOutputIterator(T *data, const int *indices, int output_matrix_size, int M) {
+  IndexReaderOutputIterator(
+      T *data, const int *indices, index_t output_matrix_size, index_t M) {
     data_ = data;
     M_ = M;
     output_matrix_size_ = output_matrix_size;
     indices_ = indices;
   }
 
-  __host__ __device__ __forceinline__ Reference operator[](int idx_in) const {
+  __host__ __device__ __forceinline__ Reference operator[](index_t idx_in) const {
 
-    int idx = idx_in;
+    index_t idx = idx_in;
     int j = indices_[idx % M_];
     if (j <= 1)
       return Reference(nullptr);
@@ -339,7 +352,7 @@ public:
 
   T *data_;
   const int *indices_;
-  int M_, output_matrix_size_;
+  index_t M_, output_matrix_size_;
 };
 
 template <typename T> class IndexReaderTransOutputIterator {
@@ -360,7 +373,12 @@ private:
 
 public:
   __host__ __device__ __forceinline__ IndexReaderTransOutputIterator(
-      T *data, const int *indices, int output_matrix_size, int m, int M, int L) {
+      T *data,
+      const int *indices,
+      index_t output_matrix_size,
+      index_t m,
+      index_t M,
+      index_t L) {
     data_ = data;
     M_ = M; // m_batch*[x_]size
     output_matrix_size_ = output_matrix_size;
@@ -369,11 +387,11 @@ public:
     L_ = L; // m_batch*dim3
   }
 
-  __host__ __device__ __forceinline__ Reference operator[](int idx_in) const {
+  __host__ __device__ __forceinline__ Reference operator[](index_t idx_in) const {
 
     // here we additionally permute 132
-    int idx = idx_in;
-    int i = (idx % L_) / m_ * M_ + (idx % m_) + idx / L_ * m_;
+    index_t idx = idx_in;
+    index_t i = (idx % L_) / m_ * M_ + (idx % m_) + idx / L_ * m_;
     int j = indices_[i % M_];
     if (j <= 1)
       return Reference(nullptr);
@@ -383,72 +401,75 @@ public:
 
   T *data_;
   const int *indices_;
-  int M_, L_, m_, output_matrix_size_;
+  index_t M_, L_, m_, output_matrix_size_;
 };
 
 // *****  batch slice iterator
 template <bool trans> // trans true
-__host__ __device__ __forceinline__ int setM(int xd_size, int m_batch, int dim3);
+__host__ __device__ __forceinline__ index_t
+setM(index_t xd_size, index_t m_batch, index_t dim3);
 
 template <> // trans true
-__host__ __device__ __forceinline__ int setM<true>(int xd_size, int m_batch, int dim3) {
+__host__ __device__ __forceinline__ index_t
+setM<true>(index_t xd_size, index_t m_batch, index_t dim3) {
   return m_batch * dim3;
 }
 template <> // trans false
-__host__ __device__ __forceinline__ int setM<false>(int xd_size, int m_batch, int dim3) {
+__host__ __device__ __forceinline__ index_t
+setM<false>(index_t xd_size, index_t m_batch, index_t dim3) {
   return m_batch * xd_size;
 }
 
 template <bool trans> // trans true
 __host__ __device__ __forceinline__ void getNewIdx(
-    int &new_idx,
-    int &i_dim3,
-    int idx,
+    index_t &new_idx,
+    index_t &i_dim3,
+    index_t idx,
     const int *batch_indices,
-    int xd_size,
-    int m_batch_slice,
-    int m_batch,
-    int M);
+    index_t xd_size,
+    index_t m_batch_slice,
+    index_t m_batch,
+    index_t M);
 
 template <> // trans true
 __host__ __device__ __forceinline__ void getNewIdx<true>(
-    int &new_idx,
-    int &i_dim3,
-    int idx,
+    index_t &new_idx,
+    index_t &i_dim3,
+    index_t idx,
     const int *batch_indices,
-    int xd_size,
-    int m_batch_slice,
-    int m_batch,
-    int M) {
+    index_t xd_size,
+    index_t m_batch_slice,
+    index_t m_batch,
+    index_t M) {
   // order of IDX is m_batch_slice x dim3 x xd_size
   // order of DATA is m_batch x xd_size x dim3
 
   i_dim3 = (idx % M) / m_batch_slice;
-  int i_batch_slice = idx % m_batch_slice;
-  int i_xd = idx / M;
-  int batch_idx =
-      batch_indices[i_batch_slice + m_batch * i_dim3]; // note: batch_indices are m_batch*dim3 and
-                                                       // need to be given with the correct offset.
+  index_t i_batch_slice = idx % m_batch_slice;
+  index_t i_xd = idx / M;
+  index_t batch_idx =
+      batch_indices[i_batch_slice + m_batch * i_dim3]; // batch_indices are m_batch*dim3
+                                                       // with the correct offset.
   new_idx = batch_idx + m_batch * i_xd;
 };
 
 template <> // trans false
 __host__ __device__ __forceinline__ void getNewIdx<false>(
-    int &new_idx,
-    int &i_dim3,
-    int idx,
+    index_t &new_idx,
+    index_t &i_dim3,
+    index_t idx,
     const int *batch_indices,
-    int xd_size,
-    int m_batch_slice,
-    int m_batch,
-    int M) {
+    index_t xd_size,
+    index_t m_batch_slice,
+    index_t m_batch,
+    index_t M) {
   // order if IDX is xd_index x m_batch_slice x dim3
   // order of data is xd_index x m_batch * dim3
 
   i_dim3 = idx / M;
-  int i_batch_slice = (idx % M) / xd_size;
-  int i_xd = idx % xd_size;
-  int batch_idx = batch_indices[i_batch_slice + m_batch * i_dim3];
+  index_t i_batch_slice = (idx % M) / xd_size;
+  index_t i_xd = idx % xd_size;
+  index_t batch_idx = batch_indices[i_batch_slice + m_batch * i_dim3];
   new_idx = batch_idx * xd_size + i_xd;
 };
 
@@ -456,7 +477,7 @@ template <bool trans, typename T> class IndexReaderSliceInputIterator {
 
 public:
   typedef IndexReaderSliceInputIterator<trans, T> self_type;
-  typedef int difference_type;
+  typedef index_t difference_type;
   typedef T value_type;
   typedef T *pointer;
   typedef T reference;
@@ -465,11 +486,11 @@ public:
   __host__ __device__ __forceinline__ IndexReaderSliceInputIterator(
       const T *data,
       const int *indices,
-      const int input_matrix_size,
-      const int xd_size,
-      const int m_batch,
-      const int dim3,
-      const int m_batch_slice,
+      const index_t input_matrix_size,
+      const index_t xd_size,
+      const index_t m_batch,
+      const index_t dim3,
+      const index_t m_batch_slice,
       const int *batch_indices) {
 
     batch_indices_ = batch_indices; // for each dim3 differently. length: m_batch_slice*dim3
@@ -486,13 +507,13 @@ public:
   __host__ __device__ __forceinline__ IndexReaderSliceInputIterator(
       const T *data,
       const int *indices,
-      const int input_matrix_size,
-      const int xd_size,
-      const int m_batch,
-      const int M,
-      const int m_batch_slice,
+      const index_t input_matrix_size,
+      const index_t xd_size,
+      const index_t m_batch,
+      const index_t M,
+      const index_t m_batch_slice,
       const int *batch_indices,
-      const int offset) {
+      const index_t offset) {
     batch_indices_ = batch_indices;
     data_ = data;
     M_ = M;
@@ -504,16 +525,17 @@ public:
     offset_ = offset;
   }
 
-  __host__ __device__ __forceinline__ T operator[](int idx_in) const {
-    int idx = idx_in + offset_;
-    int new_idx, i_dim3;
-    getNewIdx<trans>(new_idx, i_dim3, idx, batch_indices_, xd_size_, m_batch_slice_, m_batch_, M_);
+  __host__ __device__ __forceinline__ T operator[](index_t idx_in) const {
+    index_t idx = idx_in + offset_;
+    index_t new_idx, i_dim3;
+    getNewIdx<trans>(
+        new_idx, i_dim3, idx, batch_indices_, xd_size_, m_batch_slice_, m_batch_, M_);
 
     int j = indices_[new_idx];
     return (j <= 1) ? (T)j : data_[(j - 2) + i_dim3 * input_matrix_size_];
   };
 
-  __host__ __device__ __forceinline__ self_type operator+(int n) const {
+  __host__ __device__ __forceinline__ self_type operator+(index_t n) const {
     self_type retval(
         data_, indices_, input_matrix_size_, xd_size_, m_batch_, M_, m_batch_slice_, batch_indices_,
         offset_ + n);
@@ -523,7 +545,7 @@ public:
   const T *data_;
   const int *indices_;
   const int *batch_indices_;
-  int offset_, M_, input_matrix_size_, m_batch_, m_batch_slice_, xd_size_;
+  index_t offset_, M_, input_matrix_size_, m_batch_, m_batch_slice_, xd_size_;
 };
 
 template <bool trans, typename T> class IndexReaderSliceOutputIterator {
@@ -546,11 +568,11 @@ public:
   __host__ __device__ __forceinline__ IndexReaderSliceOutputIterator(
       T *data,
       const int *indices,
-      const int output_matrix_size,
-      const int xd_size,
-      const int m_batch,
-      const int dim3,
-      const int m_batch_slice,
+      const index_t output_matrix_size,
+      const index_t xd_size,
+      const index_t m_batch,
+      const index_t dim3,
+      const index_t m_batch_slice,
       const int *batch_indices) {
     batch_indices_ = batch_indices; // for each dim3 differently. should be new_m
     data_ = data;
@@ -562,10 +584,11 @@ public:
     indices_ = indices;
   };
 
-  __host__ __device__ __forceinline__ Reference operator[](int idx) const {
+  __host__ __device__ __forceinline__ Reference operator[](index_t idx) const {
 
-    int new_idx, i_dim3;
-    getNewIdx<trans>(new_idx, i_dim3, idx, batch_indices_, xd_size_, m_batch_slice_, m_batch_, M_);
+    index_t new_idx, i_dim3;
+    getNewIdx<trans>(
+        new_idx, i_dim3, idx, batch_indices_, xd_size_, m_batch_slice_, m_batch_, M_);
 
     int j = indices_[new_idx];
 
@@ -578,14 +601,14 @@ public:
   T *data_;
   const int *indices_;
   const int *batch_indices_;
-  int M_, output_matrix_size_, m_batch_, m_batch_slice_, xd_size_;
+  index_t M_, output_matrix_size_, m_batch_, m_batch_slice_, xd_size_;
 };
 
 template <bool trans, typename T> class SliceInputIterator {
 
 public:
   typedef SliceInputIterator<trans, T> self_type;
-  typedef int difference_type;
+  typedef index_t difference_type;
   typedef T value_type;
   typedef T *pointer;
   typedef T reference;
@@ -593,10 +616,10 @@ public:
 
   __host__ __device__ __forceinline__ SliceInputIterator(
       const T *data,
-      const int xd_size,
-      const int m_batch,
-      const int dim3,
-      const int m_batch_slice,
+      const index_t xd_size,
+      const index_t m_batch,
+      const index_t dim3,
+      const index_t m_batch_slice,
       const int *batch_indices) {
 
     batch_indices_ = batch_indices; // for each dim3 differently. length: m_batch_slice*dim3
@@ -611,13 +634,13 @@ public:
 
   __host__ __device__ __forceinline__ SliceInputIterator(
       const T *data,
-      const int input_matrix_size,
-      const int xd_size,
-      const int m_batch,
-      const int M,
-      const int m_batch_slice,
+      const index_t input_matrix_size,
+      const index_t xd_size,
+      const index_t m_batch,
+      const index_t M,
+      const index_t m_batch_slice,
       const int *batch_indices,
-      const int offset) {
+      const index_t offset) {
     batch_indices_ = batch_indices;
     data_ = data;
     M_ = M;
@@ -628,15 +651,16 @@ public:
     offset_ = offset;
   }
 
-  __host__ __device__ __forceinline__ T operator[](int idx_in) const {
-    int idx = idx_in + offset_;
-    int j, i_dim3;
-    getNewIdx<trans>(j, i_dim3, idx, batch_indices_, xd_size_, m_batch_slice_, m_batch_, M_);
+  __host__ __device__ __forceinline__ T operator[](index_t idx_in) const {
+    index_t idx = idx_in + offset_;
+    index_t j, i_dim3;
+    getNewIdx<trans>(
+        j, i_dim3, idx, batch_indices_, xd_size_, m_batch_slice_, m_batch_, M_);
 
     return data_[j + i_dim3 * input_matrix_size_];
   };
 
-  __host__ __device__ __forceinline__ self_type operator+(int n) const {
+  __host__ __device__ __forceinline__ self_type operator+(index_t n) const {
     self_type retval(
         data_, input_matrix_size_, xd_size_, m_batch_, M_, m_batch_slice_, batch_indices_,
         offset_ + n);
@@ -645,7 +669,7 @@ public:
 
   const T *data_;
   const int *batch_indices_;
-  int offset_, M_, input_matrix_size_, m_batch_, m_batch_slice_, xd_size_;
+  index_t offset_, M_, input_matrix_size_, m_batch_, m_batch_slice_, xd_size_;
 };
 
 template <bool trans, typename T> class SliceOutputIterator {
@@ -666,10 +690,10 @@ private:
 public:
   __host__ __device__ __forceinline__ SliceOutputIterator(
       T *data,
-      const int xd_size,
-      const int m_batch,
-      const int dim3,
-      const int m_batch_slice,
+      const index_t xd_size,
+      const index_t m_batch,
+      const index_t dim3,
+      const index_t m_batch_slice,
       const int *batch_indices) {
     batch_indices_ = batch_indices; // for each dim3 differently. should be new_m
     data_ = data;
@@ -680,17 +704,18 @@ public:
     m_batch_slice_ = m_batch_slice;
   };
 
-  __host__ __device__ __forceinline__ Reference operator[](int idx) const {
+  __host__ __device__ __forceinline__ Reference operator[](index_t idx) const {
 
-    int j, i_dim3;
-    getNewIdx<trans>(j, i_dim3, idx, batch_indices_, xd_size_, m_batch_slice_, m_batch_, M_);
+    index_t j, i_dim3;
+    getNewIdx<trans>(
+        j, i_dim3, idx, batch_indices_, xd_size_, m_batch_slice_, m_batch_, M_);
 
     return Reference(data_ + (j + i_dim3 * output_matrix_size_));
   };
 
   T *data_;
   const int *batch_indices_;
-  int M_, output_matrix_size_, m_batch_, m_batch_slice_, xd_size_;
+  index_t M_, output_matrix_size_, m_batch_, m_batch_slice_, xd_size_;
 };
 
 } // namespace RPU

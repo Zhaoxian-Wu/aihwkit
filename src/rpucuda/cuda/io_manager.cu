@@ -19,9 +19,10 @@
 #include "io_iterator.h"
 
 #define STOCH_DEFINITIONS(STOCHIF, SIZE)                                                           \
-  int total_threads = blockDim.x * gridDim.x;                                                      \
-  int total_states = MIN(total_threads, SIZE);                                                     \
-  int tid = blockDim.x * blockIdx.x + threadIdx.x;                                                 \
+  const size_t total_threads = static_cast<size_t>(blockDim.x) * static_cast<size_t>(gridDim.x);    \
+  const size_t total_states = MIN(total_threads, SIZE);                                            \
+  const size_t tid = static_cast<size_t>(blockDim.x) * static_cast<size_t>(blockIdx.x) +           \
+                     static_cast<size_t>(threadIdx.x);                                             \
   T bu = bound_upper;                                                                              \
   T bl = bound_lower;                                                                              \
   T stoch_value;                                                                                   \
@@ -69,8 +70,8 @@
 
 #define STRIDE_LOOP(SIZE, OUTVALUE, BODY)                                                          \
   T value;                                                                                         \
-  for (int i_stride = 0; i_stride < SIZE; i_stride += total_threads) {                             \
-    int idx = i_stride + tid;                                                                      \
+  for (size_t i_stride = 0; i_stride < SIZE; i_stride += total_threads) {                          \
+    const size_t idx = i_stride + tid;                                                             \
                                                                                                    \
     if (idx < SIZE) {                                                                              \
       value = input[idx];                                                                          \
@@ -98,7 +99,7 @@ template <typename T, typename InputIteratorT, bool noise_management>
 __global__ void kernelInputManagement_noSR(
     T *output,
     InputIteratorT input,
-    const int size,
+    const size_t size,
     const T *nm_scale_value,
     const T bound_lower,
     const T bound_upper,
@@ -137,7 +138,7 @@ template <typename T, typename InputIteratorT, bool noise_management>
 __global__ void kernelInputManagement(
     T *output,
     InputIteratorT input,
-    const int size_in,
+    const size_t size,
     const T *nm_scale_value,
     const T bound_lower,
     const T bound_upper,
@@ -146,7 +147,6 @@ __global__ void kernelInputManagement(
     const T inp_noise_std,
     const T asymmetry,
     curandState *random_states) {
-  int size = size_in;
   T res = resolution;
   bool sr = sto_round && (res > (T)0.0);
   T std = inp_noise_std;
@@ -183,9 +183,9 @@ template <typename T, typename InputIteratorT, bool noise_management>
 __global__ void kernelInputManagementBatch(
     T *output,
     InputIteratorT input,
-    const int size_in,
-    const int m_batch_in,
-    const bool trans_in, // true if m_batch first dimensions
+    const size_t size,
+    const size_t m_batch,
+    const bool trans_in, // true if batch is the first dimension
     const T *nm_scale_values,
     const T bound_lower,
     const T bound_upper,
@@ -194,11 +194,8 @@ __global__ void kernelInputManagementBatch(
     const T inp_noise_std,
     const T asymmetry,
     curandState *random_states) {
-  int size = size_in;
-
   bool trans = trans_in;
-  int m_batch = m_batch_in;
-  int total_size = size * m_batch;
+  const size_t total_size = size * m_batch;
 
   T res = resolution;
   bool sr = sto_round && (res > (T)0.0);
@@ -211,7 +208,7 @@ __global__ void kernelInputManagementBatch(
       total_size, value,
 
       if (noise_management) {
-        int bidx = (trans) ? (idx % m_batch) : (idx / size);
+        size_t bidx = (trans) ? (idx % m_batch) : (idx / size);
         T local_nm_scale = nm_scale_values[bidx];
 
         APPLY_INPUT_NOISE_MANAGMENT(local_nm_scale);
@@ -236,7 +233,7 @@ template <typename T, typename InputIteratorT, bool noise_management>
 __global__ void kernelInputBoundManagement(
     T *output,
     InputIteratorT input,
-    const int size_in,
+    const size_t size,
     T *nm_scale_value,
     T *scale_value_out,
     const T bm_scale,
@@ -248,7 +245,6 @@ __global__ void kernelInputBoundManagement(
     const T asymmetry,
     curandState *random_states,
     int *bound_exceeded) {
-  int size = size_in;
   T res = resolution;
   bool sr = sto_round && (res > (T)0.0);
   T bms = bm_scale;
@@ -294,20 +290,21 @@ __global__ void kernelUpdateScaleValuesAndInitialize(
     T *scale_values,
     int *exceeded_values,
     int *any_exceeded,
-    const int m_batch_in,
+    const size_t m_batch,
     const T *nm_scale_values,
     const T reduction_due_to_bm_in) {
 
   // always called when round_number>1
 
-  const int m_batch = m_batch_in;
-  int tid = blockDim.x * blockIdx.x + threadIdx.x;
-  int total_threads = blockDim.x * gridDim.x;
+  size_t tid = static_cast<size_t>(blockDim.x) * static_cast<size_t>(blockIdx.x) +
+               static_cast<size_t>(threadIdx.x);
+  size_t total_threads =
+      static_cast<size_t>(blockDim.x) * static_cast<size_t>(gridDim.x);
   const T bm_scale = reduction_due_to_bm_in;
   bool reread_nm_scales = nm_scale_values != nullptr;
 
-  for (int i_stride = 0; i_stride < m_batch; i_stride += total_threads) {
-    int idx = i_stride + tid;
+  for (size_t i_stride = 0; i_stride < m_batch; i_stride += total_threads) {
+    size_t idx = i_stride + tid;
 
     if (idx < m_batch) {
 
@@ -333,9 +330,9 @@ template <typename T, typename InputIteratorT>
 __global__ void kernelInputBoundManagementBatch(
     T *output,
     InputIteratorT input,
-    const int size_in,
-    const int m_batch_in,
-    const bool trans_in,   // true if m_batch first dimensions
+    const size_t size,
+    const size_t m_batch,
+    const bool trans_in,   // true if batch is the first dimension
     const T *scale_values, // already updated
     const T bound_lower,
     const T bound_upper,
@@ -345,10 +342,8 @@ __global__ void kernelInputBoundManagementBatch(
     const T asymmetry,
     curandState *random_states) {
 
-  const int size = size_in;
-  const int m_batch = m_batch_in;
   const bool trans = trans_in;
-  const int total_size = size * m_batch;
+  const size_t total_size = size * m_batch;
   T std = inp_noise_std;
   T res = resolution;
   bool sr = sto_round && (res > (T)0.0);
@@ -359,7 +354,7 @@ __global__ void kernelInputBoundManagementBatch(
   STRIDE_LOOP(
       total_size, value,
 
-      int sidx = trans ? (idx % m_batch) : (idx / size);
+      size_t sidx = trans ? (idx % m_batch) : (idx / size);
       T svalue = scale_values[sidx];
 
       APPLY_INPUT_NOISE_MANAGMENT(svalue);
@@ -381,7 +376,7 @@ template <typename T, typename OutputIteratorT, bool noise_management>
 __global__ void kernelOutputManagement(
     OutputIteratorT output,
     const T *input,
-    const int size,
+    const size_t size,
     const T std,
     const T *nm_scale_value,
     const T bound_lower,
@@ -427,9 +422,9 @@ template <typename T, typename OutputIteratorT, bool noise_management>
 __global__ void kernelOutputManagementBatch(
     OutputIteratorT output,
     const T *input,
-    const int size,
-    const int m_batch,
-    const bool trans, // true if m_batch first dimensions
+    const size_t size,
+    const size_t m_batch,
+    const bool trans, // true if batch is the first dimension
     const T *nm_scale_values,
     const T std, // out_noise
     const T bound_lower,
@@ -439,7 +434,7 @@ __global__ void kernelOutputManagementBatch(
     const T out_scale,
     const T asymmetry,
     curandState *random_states) {
-  const int total_size = size * m_batch;
+  const size_t total_size = size * m_batch;
   const bool sr = sto_round;
   const bool stoch_if = sr || std > (T)0.0;
 
@@ -452,7 +447,7 @@ __global__ void kernelOutputManagementBatch(
     T value = input[idx];
 
     if (noise_management) {
-      int bidx = trans ? (idx % m_batch) : (idx / size);
+      size_t bidx = trans ? (idx % m_batch) : (idx / size);
       local_nm_scale = nm_scale_values[bidx];
     }
 
@@ -479,7 +474,7 @@ template <typename T, typename OutputIteratorT>
 __global__ void kernelOutputBoundManagement(
     OutputIteratorT output,
     const T *input,
-    const int in_size,
+    const size_t size,
     const T out_noise,
     const T *dev_scale_value,
     const T bound_lower,
@@ -491,7 +486,6 @@ __global__ void kernelOutputBoundManagement(
     const T asymmetry,
     curandState *random_states,
     int *bound_exceeded) {
-  const int size = in_size;
   T std = out_noise;
   T res = resolution;
   T local_scale = *dev_scale_value; // set by input
@@ -539,9 +533,9 @@ template <typename T, typename OutputIteratorT>
 __global__ void kernelOutputBoundManagementBatch(
     OutputIteratorT output,
     const T *input,
-    const int size_in,
-    const int m_batch_in,
-    const bool trans_in, // true if m_batch first dimensions
+    const size_t size,
+    const size_t m_batch,
+    const bool trans_in, // true if batch is the first dimension
     const T *scale_values,
     int *exceeded_values_out, // ASSUMES TO BE INIT TO ZERO (InputBoundM)
     int *any_exceeded_out,    // should be zero
@@ -555,11 +549,9 @@ __global__ void kernelOutputBoundManagementBatch(
     const T asymmetry,
     curandState *random_states) {
 
-  const int m_batch = m_batch_in;
-  const int size = size_in;
   const bool trans = trans_in;
   const T std = out_noise;
-  const int total_size = size * m_batch;
+  const size_t total_size = size * m_batch;
   const T res = resolution;
   const T osc = out_scale;
   const bool sr = sto_round;
@@ -573,7 +565,7 @@ __global__ void kernelOutputBoundManagementBatch(
   STRIDE_LOOP(
       total_size, value * osc,
 
-      int sidx = trans ? (idx % m_batch) : (idx / size);
+      size_t sidx = trans ? (idx % m_batch) : (idx / size);
       T local_scale = scale_values[sidx];
 
       ADD_NOISE;
@@ -642,6 +634,7 @@ template <typename T> void InputOutputManager<T>::initializeBatchBuffer(int m_ba
 
   if (buffer_m_batch_ < m_batch) {
     buffer_m_batch_ = m_batch;
+    (void)RPU::cuda::checkedPositiveSize(m_batch, "I/O manager batch buffer");
 
     dev_scale_values_ = RPU::make_unique<CudaArray<T>>(context_, m_batch);
     dev_bound_exceeded_ = RPU::make_unique<CudaArray<int>>(context_, m_batch);
@@ -686,6 +679,13 @@ void InputOutputManager<T>::initWithInput(
   temp_out_scale_ = add_out_scale * io.out_scale;
   temp_is_test_ = is_test;
   temp_in_size_ = in_size;
+  (void)RPU::cuda::checkedPositiveSize(m_batch, "I/O manager batch");
+  const size_t input_size = RPU::cuda::checkedPositiveSize(in_size, "input MVM size");
+  const size_t output_size = RPU::cuda::checkedPositiveSize(out_size_, "output MVM size");
+  const size_t input_elements =
+      RPU::cuda::checkedSizeProduct(input_size, m_batch, "input MVM");
+  const size_t output_elements =
+      RPU::cuda::checkedSizeProduct(output_size, m_batch, "output MVM");
   DEBUG_OUT("Init with in size " << in_size << " and batch " << m_batch);
   // in_size can be changed momentarily but only when noise management etc. is turned off.
   if (in_size != in_size_ && (io.noise_management != NoiseManagementType::None ||
@@ -697,10 +697,8 @@ void InputOutputManager<T>::initWithInput(
     // re-initialize batch buffer
     this->initializeBatchBuffer(m_batch);
   }
-  temp_input_applied_ =
-      context_->template getSharedBuffer<T>(RPU_BUFFER_IN, (size_t)m_batch * (size_t)temp_in_size_);
-  temp_output_applied_ =
-      context_->template getSharedBuffer<T>(RPU_BUFFER_OUT, (size_t)m_batch * (size_t)out_size_);
+  temp_input_applied_ = context_->template getSharedBuffer<T>(RPU_BUFFER_IN, input_elements);
+  temp_output_applied_ = context_->template getSharedBuffer<T>(RPU_BUFFER_OUT, output_elements);
 
   // noise management
   this->noise_manager_->compute(dev_input, io.noise_management, io, m_batch, input_trans, is_test);
@@ -724,12 +722,14 @@ template <typename InputIteratorT>
 void InputOutputManager<T>::applyToInputWithBoundManagement(InputIteratorT dev_input) {
 
   cudaStream_t s = context_->getStream();
-  int m_batch = temp_m_batch_;
+  const int m_batch = temp_m_batch_;
+  (void)RPU::cuda::checkedPositiveSize(m_batch, "input-bound batch");
 
   if (temp_in_size_ != in_size_) {
     RPU_FATAL("flexible in_size not suported");
   }
-  int in_size = in_size_;
+  const int in_size = in_size_;
+  const size_t input_size = RPU::cuda::checkedPositiveSize(in_size, "input-bound size");
 
   // this will be called within a loop until all are not exceeded
   reduction_due_to_bound_management_ *= bound_management_factor_;
@@ -788,10 +788,10 @@ void InputOutputManager<T>::applyToInputWithBoundManagement(InputIteratorT dev_i
     // run
     int nblocks_im_batch = getInBlocksBatch(m_batch);
     kernelInputBoundManagementBatch<<<nblocks_im_batch, nthreads_, 0, s>>>(
-        temp_input_applied_, dev_input, in_size, m_batch, temp_trans_, dev_scale_values_->getData(),
-        -io_->inp_bound, io_->inp_bound, io_->inp_res, io_->inp_sto_round, io_->inp_noise,
-        io_->inp_asymmetry,
-        context_->getRandomStates(MIN(nblocks_im_batch * nthreads_, m_batch * in_size)));
+        temp_input_applied_, dev_input, input_size, m_batch, temp_trans_,
+        dev_scale_values_->getData(), -io_->inp_bound, io_->inp_bound, io_->inp_res,
+        io_->inp_sto_round, io_->inp_noise, io_->inp_asymmetry,
+        context_->getRandomStates(nblocks_im_batch * nthreads_));
   }
 }
 
@@ -800,17 +800,21 @@ template <typename InputIteratorT>
 void InputOutputManager<T>::applyToInput(InputIteratorT dev_input) {
   if (io_->isPerfect()) {
     // short-cut (still need to copy though to apply the iterator)
-    int m_batch = temp_m_batch_;
-    RPU::math::copyWithIterator(context_, getInBuffer(), dev_input, m_batch * temp_in_size_);
+    const int m_batch = temp_m_batch_;
+    RPU::math::copyWithIterator(
+        context_, getInBuffer(), dev_input,
+        RPU::cuda::checkedPositiveProduct(m_batch, temp_in_size_, "input copy"));
     return;
   }
   if (io_->bound_management != BoundManagementType::None) {
     applyToInputWithBoundManagement(dev_input);
   } else {
     cudaStream_t s = context_->getStream();
-    int m_batch = temp_m_batch_;
+    const int m_batch = temp_m_batch_;
+    (void)RPU::cuda::checkedPositiveSize(m_batch, "input batch");
     T *nm_scale_values = noise_manager_->getScaleValues();
-    int in_size = temp_in_size_; // here the in size is flexible
+    const int in_size = temp_in_size_; // here the in size is flexible
+    const size_t input_size = RPU::cuda::checkedPositiveSize(in_size, "input size");
 
     // no bound management
     if (m_batch == RPU_IO_USE_SINGLE_BATCH_VERSION) {
@@ -832,10 +836,10 @@ void InputOutputManager<T>::applyToInput(InputIteratorT dev_input) {
       int nblocks_im_batch = getInBlocksBatch(m_batch);
       LAUNCH_NM_KERNEL(
           kernelInputManagementBatch, InputIteratorT, nblocks_im_batch,
-          (temp_input_applied_, dev_input, in_size, m_batch, temp_trans_, nm_scale_values,
+          (temp_input_applied_, dev_input, input_size, m_batch, temp_trans_, nm_scale_values,
            -io_->inp_bound, io_->inp_bound, io_->inp_res, io_->inp_sto_round, io_->inp_noise,
            io_->inp_asymmetry,
-           context_->getRandomStates(MIN(nblocks_im_batch * nthreads_, in_size * m_batch))));
+           context_->getRandomStates(nblocks_im_batch * nthreads_)));
     }
   }
 }
@@ -846,7 +850,9 @@ bool InputOutputManager<T>::applyToOutputWithBoundManagement(
     OutputIteratorT dev_output, const bool out_trans, const bool with_out_noise) {
 
   cudaStream_t s = context_->getStream();
-  int m_batch = temp_m_batch_;
+  const int m_batch = temp_m_batch_;
+  (void)RPU::cuda::checkedPositiveSize(m_batch, "output-bound batch");
+  const size_t output_size = RPU::cuda::checkedPositiveSize(out_size_, "output-bound size");
   int nblocks_om_batch = getOutBlocksBatch(m_batch);
 
   // actual bound management
@@ -861,13 +867,13 @@ bool InputOutputManager<T>::applyToOutputWithBoundManagement(
   } else {
 
     kernelOutputBoundManagementBatch<<<nblocks_om_batch, nthreads_, 0, s>>>(
-        dev_output, temp_output_applied_, out_size_, m_batch, out_trans,
+        dev_output, temp_output_applied_, output_size, m_batch, out_trans,
         dev_scale_values_->getData(),
         dev_bound_exceeded_->getData(), // out
         dev_any_exceeded_->getData(),   // out
         with_out_noise ? io_->out_noise : (T)0.0, -io_->out_bound, io_->out_bound, io_->out_res,
         io_->out_sto_round, temp_out_scale_, io_->bm_test_negative_bound, io_->out_asymmetry,
-        context_->getRandomStates(MIN(nblocks_om_batch * nthreads_, out_size_ * m_batch)));
+        context_->getRandomStates(nblocks_om_batch * nthreads_));
   }
 
   dev_any_exceeded_->copyTo(h_exceeded_);
@@ -884,9 +890,11 @@ bool InputOutputManager<T>::applyToOutput(
 
   if (io_->isPerfect()) {
     // short-cut (still need to copy though to apply the iterator)
-    int m_batch = temp_m_batch_;
+    const int m_batch = temp_m_batch_;
     const T *tmp = getOutBuffer();
-    RPU::math::copyWithIterator(context_, dev_output, tmp, m_batch * out_size_);
+    RPU::math::copyWithIterator(
+        context_, dev_output, tmp,
+        RPU::cuda::checkedPositiveProduct(m_batch, out_size_, "output copy"));
     return true;
   }
 
@@ -899,9 +907,10 @@ bool InputOutputManager<T>::applyToOutput(
   } else {
 
     cudaStream_t s = context_->getStream();
-    int m_batch = temp_m_batch_;
-    int nblocks_om_batch =
-        MIN(nblocks_batch_max_, this->context_->getNBlocks(out_size_ * m_batch, nthreads_));
+    const int m_batch = temp_m_batch_;
+    (void)RPU::cuda::checkedPositiveSize(m_batch, "output batch");
+    const size_t output_size = RPU::cuda::checkedPositiveSize(out_size_, "output size");
+    int nblocks_om_batch = getOutBlocksBatch(m_batch);
 
     T *nm_scale_values = noise_manager_->getScaleValues();
 
@@ -919,10 +928,10 @@ bool InputOutputManager<T>::applyToOutput(
       // batched
       LAUNCH_NM_KERNEL(
           kernelOutputManagementBatch, OutputIteratorT, nblocks_om_batch,
-          (dev_output, temp_output_applied_, out_size_, m_batch, out_trans, nm_scale_values,
+          (dev_output, temp_output_applied_, output_size, m_batch, out_trans, nm_scale_values,
            with_out_noise ? io_->out_noise : (T)0.0, -io_->out_bound, io_->out_bound, io_->out_res,
            io_->out_sto_round, temp_out_scale_, io_->out_asymmetry,
-           context_->getRandomStates(MIN(nblocks_om_batch * nthreads_, out_size_ * m_batch))));
+           context_->getRandomStates(nblocks_om_batch * nthreads_)));
     }
 
     return true; // no bound managment

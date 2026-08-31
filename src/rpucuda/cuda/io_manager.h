@@ -54,7 +54,8 @@ public:
 
   // for testing
   void copyTempArrayToHost(T *host_array) {
-    CudaArray<T> tmp(context_, getMBatch() * getInSize());
+    CudaArray<T> tmp(
+        context_, RPU::cuda::checkedPositiveProduct(getMBatch(), getInSize(), "input buffer"));
     tmp.assignFromDevice(getInBuffer());
     tmp.copyTo(host_array);
     context_->synchronize();
@@ -63,7 +64,9 @@ public:
 
   bool
   applyToOutputInPlace(T *dev_output, const bool trans = false, const bool with_out_noise = true) {
-    RPU::math::copy<T>(context_, getMBatch() * getOutSize(), dev_output, 1, getOutBuffer(), 1);
+    RPU::math::copyWithIterator(
+        context_, getOutBuffer(), dev_output,
+        RPU::cuda::checkedPositiveProduct(getMBatch(), getOutSize(), "output buffer"));
     return applyToOutput(dev_output, trans, with_out_noise);
   }
   void dumpExtra(RPU::state_t &extra, const std::string prefix);
@@ -81,13 +84,19 @@ public:
     return MIN(context_->getNBlocks(temp_in_size_, nthreads_), nblocks_batch_max_);
   };
   inline int getInBlocksBatch(int m_batch) const {
-    return MIN(nblocks_batch_max_, this->context_->getNBlocks(temp_in_size_ * m_batch, nthreads_));
+    return MIN(
+        nblocks_batch_max_,
+        this->context_->getNBlocks(
+            RPU::cuda::checkedPositiveProduct(temp_in_size_, m_batch, "input MVM"), nthreads_));
   };
   inline int getOutBlocks() const {
     return MIN(context_->getNBlocks(out_size_, nthreads_), nblocks_batch_max_);
   };
   inline int getOutBlocksBatch(int m_batch) const {
-    return MIN(nblocks_batch_max_, this->context_->getNBlocks(out_size_ * m_batch, nthreads_));
+    return MIN(
+        nblocks_batch_max_,
+        this->context_->getNBlocks(
+            RPU::cuda::checkedPositiveProduct(out_size_, m_batch, "output MVM"), nthreads_));
   };
   inline int getNThreads() const { return nthreads_; };
   inline const IOMetaParameter<T> &getIO() const { return *io_; };

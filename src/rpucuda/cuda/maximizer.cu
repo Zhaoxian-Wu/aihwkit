@@ -77,8 +77,8 @@ template <> __forceinline__ __device__ half_t atomicMaxFP(half_t *addr, half_t v
 template <typename InputIteratorT, typename T, bool abs_if = true>
 __global__ void kernelMaximizeBatchTrans(
     InputIteratorT input,
-    const int total_size_in,
-    const int m_batch_in,
+    const size_t total_size_in,
+    const size_t m_batch,
     T *max_values,
     T *max_values0,
     const T min_value) {
@@ -86,13 +86,12 @@ __global__ void kernelMaximizeBatchTrans(
   // -- only use this version if m_batch < blockDim.x !!!
   // -- probably: strided version would be faster...
 
-  int tid = blockDim.x * blockIdx.x + threadIdx.x;
+  size_t tid = static_cast<size_t>(blockDim.x) * static_cast<size_t>(blockIdx.x) +
+               static_cast<size_t>(threadIdx.x);
   extern __shared__ float
       block_max_values[]; // assumes that shared is of size nthreads*sizeof(float)
 
-  const int size = total_size_in;
-  const int m_batch = m_batch_in;
-
+  const size_t size = total_size_in;
   block_max_values[threadIdx.x] = (float)min_value;
   __syncthreads();
 
@@ -103,7 +102,7 @@ __global__ void kernelMaximizeBatchTrans(
   if (tid < size) {
 
     T value = (T)input[tid];
-    int midx = tid % m_batch;
+    size_t midx = tid % m_batch;
 
     if (abs_if) {
       value = (value >= (T)0.0) ? value : -value;
@@ -113,7 +112,7 @@ __global__ void kernelMaximizeBatchTrans(
   }
   __syncthreads();
 
-  int bidx = threadIdx.x;
+  size_t bidx = threadIdx.x;
   if (bidx < m_batch) {
     atomicMaxFP(&(max_values[bidx]), (T)block_max_values[bidx]);
   }
@@ -122,8 +121,8 @@ __global__ void kernelMaximizeBatchTrans(
 template <typename InputIteratorT, typename T, bool abs_if = true>
 __global__ void kernelMaximizeBatchTrans_LargeBatch(
     InputIteratorT input,
-    const int total_size_in,
-    const int m_batch_in,
+    const size_t total_size_in,
+    const size_t m_batch,
     T *max_values,
     T *max_values0,
     const T min_value) {
@@ -131,11 +130,10 @@ __global__ void kernelMaximizeBatchTrans_LargeBatch(
   // -- use this version if m_batch >= blockDim.x
   // -- just uses atomic on global memory
 
-  int tid = blockDim.x * blockIdx.x + threadIdx.x;
+  size_t tid = static_cast<size_t>(blockDim.x) * static_cast<size_t>(blockIdx.x) +
+               static_cast<size_t>(threadIdx.x);
 
-  const int size = total_size_in;
-  const int m_batch = m_batch_in;
-
+  const size_t size = total_size_in;
   if (tid < m_batch) {
     max_values0[tid] = min_value;
   }
@@ -144,7 +142,7 @@ __global__ void kernelMaximizeBatchTrans_LargeBatch(
 
     T value = input[tid];
 
-    int midx = tid % m_batch;
+    size_t midx = tid % m_batch;
 
     if (abs_if) {
       value = (value >= (T)0.0) ? value : -value;
@@ -156,7 +154,7 @@ __global__ void kernelMaximizeBatchTrans_LargeBatch(
 
 template <typename T> struct IndexReader {
   __host__ __device__ IndexReader(T *data_in) { data = data_in; }
-  __host__ __device__ __forceinline__ T operator()(const int &idx) const {
+  __host__ __device__ __forceinline__ T operator()(const uint64_t &idx) const {
     return (idx > 0) ? data[idx - 1] : (T)0.0;
   }
 
@@ -166,16 +164,17 @@ template <typename T> struct IndexReader {
 };
 
 template <typename T> struct BatchTransposer {
-  __host__ __device__ BatchTransposer(T *data_in, int size_in, int m_batch_in) {
+  __host__ __device__ BatchTransposer(T *data_in, size_t size_in, size_t m_batch_in) {
     m_batch = m_batch_in;
     size = size_in;
     data = data_in;
   }
-  __host__ __device__ __forceinline__ T operator()(const int &idx) const {
+  __host__ __device__ __forceinline__ T operator()(const uint64_t &idx) const {
     return data[(idx / size) + (idx % size) * m_batch];
   }
 
-  __host__ __device__ __forceinline__ void setSizeAndBatch(int size_in, int m_batch_in) {
+  __host__ __device__ __forceinline__ void
+  setSizeAndBatch(size_t size_in, size_t m_batch_in) {
     m_batch = m_batch_in;
     size = size_in;
   }
@@ -183,8 +182,8 @@ template <typename T> struct BatchTransposer {
   __host__ __device__ __forceinline__ void setData(T *data_in) { data = data_in; }
 
   T *data;
-  int size;
-  int m_batch;
+  size_t size;
+  size_t m_batch;
 };
 
 namespace test_helper {
@@ -192,43 +191,48 @@ namespace test_helper {
 template <typename T>
 void debugMaxBatched(const T *indata, int size, int m_batch, bool trans, T *max_values) {
 
-  int *offsets = new int[m_batch + 1];
+  const size_t total_size =
+      RPU::cuda::checkedPositiveProduct(size, m_batch, "debug maximizer input");
+  const size_t input_size = RPU::cuda::checkedPositiveSize(size, "debug maximizer size");
+  const size_t offset_count =
+      RPU::cuda::checkedPositiveSize(m_batch, "debug maximizer batch") + 1;
+  uint64_t *offsets = new uint64_t[offset_count];
 
-  for (int i = 0; i <= m_batch; i++) {
-    offsets[i] = i * size;
+  for (size_t i = 0; i < offset_count; i++) {
+    offsets[i] = static_cast<uint64_t>(i * input_size);
   }
   auto c_container = CudaContext(-1, false);
   CudaContextPtr c = &c_container;
-  CudaArray<T> dev_in(c, size * m_batch, indata);
+  CudaArray<T> dev_in(c, total_size, indata);
   CudaArray<T> dev_max_values(c, m_batch);
   dev_max_values.setConst(0);
   CudaArray<T> dev_max_values0(c, m_batch);
 
-  CudaArray<int> dev_offsets(c, m_batch + 1, offsets);
+  CudaArray<uint64_t> dev_offsets(c, offset_count, offsets);
 
   CUDA_CALL(cudaPeekAtLastError());
   CUDA_CALL(cudaDeviceSynchronize());
 
   // test transform input iterator
-  int *tmp = new int[size * m_batch];
-  for (int i = 0; i < size * m_batch; i++) {
+  uint64_t *tmp = new uint64_t[total_size];
+  for (size_t i = 0; i < total_size; i++) {
     tmp[i] = i + 1;
   }
-  CudaArray<int> dev_in_index(c, size * m_batch, tmp);
+  CudaArray<uint64_t> dev_in_index(c, total_size, tmp);
   CUDA_CALL(cudaDeviceSynchronize());
 
   IndexReader<T> idx_reader(dev_in.getData());
-  RPU_CUB_NS_QUALIFIER TransformInputIterator<T, IndexReader<T>, int *> in_itr(
+  RPU_CUB_NS_QUALIFIER TransformInputIterator<T, IndexReader<T>, uint64_t *> in_itr(
       dev_in_index.getData(), idx_reader);
 
-  RPU_CUB_NS_QUALIFIER CountingInputIterator<int> index(0);
-  BatchTransposer<T> batch_transposer(dev_in.getData(), size, m_batch);
+  RPU_CUB_NS_QUALIFIER CountingInputIterator<uint64_t> index(0);
+  BatchTransposer<T> batch_transposer(dev_in.getData(), input_size, m_batch);
   RPU_CUB_NS_QUALIFIER
-  TransformInputIterator<T, BatchTransposer<T>, RPU_CUB_NS_QUALIFIER CountingInputIterator<int>>
+  TransformInputIterator<T, BatchTransposer<T>, RPU_CUB_NS_QUALIFIER CountingInputIterator<uint64_t>>
       in_trans_itr(index, batch_transposer);
 
-  IndexReader<int> idx_reader_host(tmp);
-  RPU_CUB_NS_QUALIFIER TransformInputIterator<int, IndexReader<int>, int *> test_host(
+  IndexReader<uint64_t> idx_reader_host(tmp);
+  RPU_CUB_NS_QUALIFIER TransformInputIterator<uint64_t, IndexReader<uint64_t>, uint64_t *> test_host(
       tmp, idx_reader_host);
   std::cout << test_host[0] << std::endl;
 
@@ -244,7 +248,7 @@ void debugMaxBatched(const T *indata, int size, int m_batch, bool trans, T *max_
   CUDA_CALL(cudaDeviceSynchronize());
 
   int nthreads = c->getNThreads();
-  int nblocks = c->getNBlocks(size * m_batch, nthreads);
+  int nblocks = c->getNBlocks(total_size, nthreads);
   cudaStream_t s = c->getStream();
 
   CUDA_TIMING_INIT;
@@ -260,12 +264,12 @@ void debugMaxBatched(const T *indata, int size, int m_batch, bool trans, T *max_
 
     if (m_batch > nthreads) {
       kernelMaximizeBatchTrans_LargeBatch<<<nblocks, nthreads, 0, s>>>(
-          in_itr, size * m_batch, m_batch, dev_max_values.getData(), dev_max_values0.getData(),
+          in_itr, total_size, m_batch, dev_max_values.getData(), dev_max_values0.getData(),
           (T)0.0);
 
     } else {
       kernelMaximizeBatchTrans<<<nblocks, nthreads, nthreads * sizeof(float), s>>>(
-          in_itr, size * m_batch, m_batch, dev_max_values.getData(), dev_max_values0.getData(),
+          in_itr, total_size, m_batch, dev_max_values.getData(), dev_max_values0.getData(),
           (T)0.0);
     }
 
@@ -311,7 +315,8 @@ template void debugMaxBatched<half_t>(half_t const *, int, int, bool, half_t *);
 
 template <typename T>
 Maximizer<T>::Maximizer(CudaContextPtr c, int size, bool abs_if)
-    : size_{size}, context_{c}, buffer_m_batch_{0}, abs_if_{abs_if} {
+    : size_{RPU::cuda::checkedPositiveSize(size, "maximizer size")}, context_{c},
+      buffer_m_batch_{0}, abs_if_{abs_if} {
   // initialize for m_batch=1
   dev_max_values_ = RPU::make_unique<CudaArray<T>>(context_, 1);
   size_t temp_storage_bytes = 0;
@@ -332,19 +337,21 @@ template <typename T> void Maximizer<T>::initializeBatchBuffer(int m_batch) {
 
   if ((m_batch > 1) && (buffer_m_batch_ < m_batch)) {
     buffer_m_batch_ = m_batch;
+    const size_t offset_count =
+        RPU::cuda::checkedPositiveSize(m_batch, "maximizer batch buffer") + 1;
 
     dev_max_values_ = RPU::make_unique<CudaArray<T>>(context_, m_batch);
     dev_max_values0_ = RPU::make_unique<CudaArray<T>>(context_, m_batch);
     dev_max_values0_->setConst(abs_if_ ? (T)0.0 : std::numeric_limits<T>::lowest());
 
-    int *offsets = new int[m_batch + 1];
+    uint64_t *offsets = new uint64_t[offset_count];
 
     // not trans
-    for (int i = 0; i <= m_batch; i++) {
-      offsets[i] = i * size_;
+    for (size_t i = 0; i < offset_count; i++) {
+      offsets[i] = static_cast<uint64_t>(i * size_);
     }
 
-    dev_offsets_ = RPU::make_unique<CudaArray<int>>(context_, m_batch + 1, offsets);
+    dev_offsets_ = RPU::make_unique<CudaArray<uint64_t>>(context_, offset_count, offsets);
 
     size_t temp_storage_bytes = 0;
     if (abs_if_) {
@@ -402,7 +409,8 @@ void Maximizer<T>::compute(InputIteratorT dev_input, int m_batch, bool trans) {
 
       std::swap(dev_max_values_, dev_max_values0_);
       int nthreads = context_->getNThreads();
-      int n = size_ * m_batch;
+      (void)RPU::cuda::checkedPositiveSize(m_batch, "maximizer batch");
+      size_t n = RPU::cuda::checkedSizeProduct(size_, m_batch, "maximizer input");
       int nblocks = context_->getNBlocks(n, nthreads);
       if (m_batch <= nthreads) {
         int shared_mem = nthreads * sizeof(float);

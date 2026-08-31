@@ -55,25 +55,27 @@ template <typename T>
 __global__ void kernelOutputWeightNoiseBatch(
     T *output,
     const T *input,
-    const int size,
-    const int m_batch,
-    const bool trans, // true if m_batch first dimensions
+    const size_t size,
+    const size_t m_batch,
+    const bool trans, // true if batch is the first dimension
     const T *noise_var_values,
     curandState *random_states) {
-  const int total_size = size * m_batch;
-  int tid = blockDim.x * blockIdx.x + threadIdx.x;
+  const size_t total_size = size * m_batch;
+  size_t tid = static_cast<size_t>(blockDim.x) * static_cast<size_t>(blockIdx.x) +
+               static_cast<size_t>(threadIdx.x);
   T stoch_value;
   curandState local_state;
-  int total_threads = blockDim.x * gridDim.x;
-  int total_states = MIN(total_size, total_threads);
+  size_t total_threads =
+      static_cast<size_t>(blockDim.x) * static_cast<size_t>(gridDim.x);
+  size_t total_states = MIN(total_size, total_threads);
 
   if (tid < total_states) {
     local_state = random_states[tid];
   }
 
-  for (int idx = tid; idx < total_size; idx += total_threads) {
+  for (size_t idx = tid; idx < total_size; idx += total_threads) {
     T value = input[idx];
-    int bidx = trans ? (idx % m_batch) : (idx / size);
+    size_t bidx = trans ? (idx % m_batch) : (idx / size);
     T noise_var = noise_var_values[bidx];
     stoch_value = curand_normal(&local_state);
     value += stoch_value * sqrt(noise_var);
@@ -89,17 +91,19 @@ __global__ void kernelElemSqrtAddNoiseBatch(
     T *output,
     const T *input,
     const T *noise_var_values,
-    const int total_size,
+    const size_t total_size,
     curandState *random_states) {
-  int tid = blockDim.x * blockIdx.x + threadIdx.x;
+  size_t tid = static_cast<size_t>(blockDim.x) * static_cast<size_t>(blockIdx.x) +
+               static_cast<size_t>(threadIdx.x);
   T stoch_value;
   curandState local_state;
-  int total_threads = blockDim.x * gridDim.x;
-  int total_states = MIN(total_size, total_threads);
+  size_t total_threads =
+      static_cast<size_t>(blockDim.x) * static_cast<size_t>(gridDim.x);
+  size_t total_states = MIN(total_size, total_threads);
   if (tid < total_states) {
     local_state = random_states[tid];
   }
-  for (int idx = tid; idx < total_size; idx += total_threads) {
+  for (size_t idx = tid; idx < total_size; idx += total_threads) {
     T value = input[idx];
     T noise_var = noise_var_values[idx];
     stoch_value = curand_normal(&local_state);
@@ -116,14 +120,14 @@ template <typename T>
 __global__ void kernelInputPositionCoding(
     T *output,      // x' out
     const T *input, // x in
-    const int size,
-    const int m_batch,
+    const size_t size,
+    const size_t m_batch,
     const bool trans) {
-  const int total_size = size * m_batch;
+  const size_t total_size = size * m_batch;
 
   RPU_CUDA_1D_KERNEL_LOOP(idx, total_size) {
     T value = input[idx];
-    int xidx = trans ? (idx / m_batch) : (idx % size);
+    size_t xidx = trans ? (idx / m_batch) : (idx % size);
     T z = (T)1.0 - (T)xidx / (T)size;
     value *= (T)1.0 - z * z;
     output[idx] = value;
@@ -134,7 +138,7 @@ __global__ void kernelInputPositionCoding(
 // c_i = a_i*(a_i*(0.05*a_i - 0.2) + 0.5);
 template <typename T>
 __global__ void kernelElemMulCAdd(
-    T *output, const T *input, const T *a_values, const T *pc_gemm_values, const int total_size) {
+    T *output, const T *input, const T *a_values, const T *pc_gemm_values, const size_t total_size) {
 
   const T K2 = 0.05;
   const T K1 = 0.2;
@@ -273,19 +277,22 @@ void ForwardBackwardPassIOManagedCuda<T>::applyOutputWeightNoise(
     return;
   }
 
-  auto m_batch = iom.getMBatch();
+  const int m_batch = iom.getMBatch();
+  (void)RPU::cuda::checkedPositiveSize(m_batch, "weight-noise batch");
   auto in_trans = iom.getInTrans();
   auto context = iom.getContext();
-  auto in_size = iom.getInSize();
-  auto out_size = iom.getOutSize();
+  const int in_size = iom.getInSize();
+  const int out_size = iom.getOutSize();
+  const size_t input_size = RPU::cuda::checkedPositiveSize(in_size, "weight-noise input");
+  const size_t output_size = RPU::cuda::checkedPositiveSize(out_size, "weight-noise output");
   auto nblocks_om = iom.getOutBlocks();
   auto nblocks_om_batch = iom.getOutBlocksBatch(m_batch);
   auto nthreads = iom.getNThreads();
 
   T *wnoise_buffer = context->template getSharedBuffer<T>(RPU_BUFFER_TEMP_1, m_batch);
 
-  if (!dev_ones_ || dev_ones_->getSize() < in_size) {
-    dev_ones_ = RPU::make_unique<CudaArray<T>>(context, in_size);
+  if (!dev_ones_ || dev_ones_->getSize() < input_size) {
+    dev_ones_ = RPU::make_unique<CudaArray<T>>(context, input_size);
     dev_ones_->setConst((T)1.0);
   }
 
@@ -307,9 +314,11 @@ void ForwardBackwardPassIOManagedCuda<T>::applyOutputWeightNoise(
         io.w_noise, context_->getRandomStates(MIN(nblocks_om * nthreads, out_size)));
 
   } else {
-    T *in_buffer = context->template getSharedBuffer<T>(RPU_BUFFER_TEMP_2, m_batch * in_size);
+    const size_t total_in_size =
+        RPU::cuda::checkedSizeProduct(m_batch, input_size, "weight-noise input");
+    T *in_buffer = context->template getSharedBuffer<T>(RPU_BUFFER_TEMP_2, total_in_size);
 
-    RPU::math::elempow2(context, in_buffer, in_size * m_batch, in_temp);
+    RPU::math::elempow2(context, in_buffer, total_in_size, in_temp);
 
     // we just use gemm for the reduction. That way we can also scale by the noise level
     RPU::math::gemm<T>(
@@ -328,8 +337,8 @@ void ForwardBackwardPassIOManagedCuda<T>::applyOutputWeightNoise(
     kernelOutputWeightNoiseBatch<<<nblocks_om_batch, nthreads, 0, context->getStream()>>>(
         out_temp,
         out_temp, // in-place
-        out_size, m_batch, out_trans, wnoise_buffer,
-        context->getRandomStates(MIN(nblocks_om_batch * nthreads, out_size * m_batch)));
+        output_size, m_batch, out_trans, wnoise_buffer,
+        context->getRandomStates(nblocks_om_batch * nthreads));
   }
   context->template releaseSharedBuffer<T>(RPU_BUFFER_TEMP_1);
 }
@@ -343,11 +352,14 @@ void ForwardBackwardPassIOManagedCuda<T>::applyOutputPCMReadNoise(
     return;
   }
 
-  auto m_batch = iom.getMBatch();
+  const int m_batch = iom.getMBatch();
+  (void)RPU::cuda::checkedPositiveSize(m_batch, "PCM read-noise batch");
   auto in_trans = iom.getInTrans();
   auto context = iom.getContext();
-  auto in_size = iom.getInSize();
-  auto out_size = iom.getOutSize();
+  const int in_size = iom.getInSize();
+  const int out_size = iom.getOutSize();
+  const size_t input_size = RPU::cuda::checkedPositiveSize(in_size, "PCM read-noise input");
+  const size_t output_size = RPU::cuda::checkedPositiveSize(out_size, "PCM read-noise output");
   auto nblocks_om = iom.getOutBlocks();
   auto nblocks_om_batch = iom.getOutBlocksBatch(m_batch);
   auto nthreads = iom.getNThreads();
@@ -363,15 +375,21 @@ void ForwardBackwardPassIOManagedCuda<T>::applyOutputPCMReadNoise(
   T *out_temp = iom.getOutBuffer();
 
   // unfortunately needs a lot of extra buffer memory (CUTLASS will help)
-  T *batch_buffer = context->template getSharedBuffer<T>(RPU_BUFFER_TEMP_1, m_batch * out_size);
-  T *weight_buffer = context->template getSharedBuffer<T>(RPU_BUFFER_TEMP_3, in_size * out_size);
-  T *in_buffer = context->template getSharedBuffer<T>(RPU_BUFFER_TEMP_2, in_size * m_batch);
+  const size_t total_out_size =
+      RPU::cuda::checkedSizeProduct(m_batch, output_size, "PCM read-noise output");
+  const size_t total_in_size =
+      RPU::cuda::checkedSizeProduct(m_batch, input_size, "PCM read-noise input");
+  const size_t weight_size =
+      RPU::cuda::checkedSizeProduct(input_size, output_size, "PCM read-noise weights");
+  T *batch_buffer = context->template getSharedBuffer<T>(RPU_BUFFER_TEMP_1, total_out_size);
+  T *weight_buffer = context->template getSharedBuffer<T>(RPU_BUFFER_TEMP_3, weight_size);
+  T *in_buffer = context->template getSharedBuffer<T>(RPU_BUFFER_TEMP_2, total_in_size);
 
   // compute thr abs weights current
-  RPU::math::elemabs(context, weight_buffer, dev_weights, out_size * in_size);
+  RPU::math::elemabs(context, weight_buffer, dev_weights, weight_size);
 
   // in_temp can be overwritten since it use assumed to have been used already
-  RPU::math::elempow2(context, in_buffer, in_size * m_batch, in_temp);
+  RPU::math::elempow2(context, in_buffer, total_in_size, in_temp);
 
   // we just use gemm also scale by the noise level
   // assumed_wmax is set to 1. if otherwise, need to be set from outside
@@ -385,8 +403,7 @@ void ForwardBackwardPassIOManagedCuda<T>::applyOutputPCMReadNoise(
   kernelElemSqrtAddNoiseBatch<<<nblocks_om_batch, nthreads, 0, context->getStream()>>>(
       out_temp,
       out_temp, // in-place
-      batch_buffer, out_size * m_batch,
-      context_->getRandomStates(MIN(nblocks_om_batch * nthreads, out_size * m_batch)));
+      batch_buffer, total_out_size, context_->getRandomStates(nblocks_om_batch * nthreads));
 
   context->template releaseSharedBuffer<T>(RPU_BUFFER_TEMP_2);
   context->template releaseSharedBuffer<T>(RPU_BUFFER_TEMP_3);
@@ -397,23 +414,25 @@ void ForwardBackwardPassIOManagedCuda<T>::applyOutputPCMReadNoise(
 template <typename T>
 __global__ void kernelOutputNoiseOtoOBatch(
     T *output,
-    const int out_size,
-    const bool trans, // true if m_batch first dimensions
-    const int m_batch,
+    const size_t out_size,
+    const bool trans, // true if batch is the first dimension
+    const size_t m_batch,
     const T *out_noise_values,
     curandState *random_states) {
-  const int tid = blockDim.x * blockIdx.x + threadIdx.x;
+  const size_t tid = static_cast<size_t>(blockDim.x) * static_cast<size_t>(blockIdx.x) +
+                     static_cast<size_t>(threadIdx.x);
   T stoch_value;
   curandState local_state;
-  const int total_threads = blockDim.x * gridDim.x;
-  const int total_size = m_batch * out_size;
-  int total_states = MIN(total_size, total_threads);
+  const size_t total_threads =
+      static_cast<size_t>(blockDim.x) * static_cast<size_t>(gridDim.x);
+  const size_t total_size = m_batch * out_size;
+  size_t total_states = MIN(total_size, total_threads);
   if (tid < total_states) {
     local_state = random_states[tid];
   }
-  for (int idx = tid; idx < total_size; idx += total_threads) {
+  for (size_t idx = tid; idx < total_size; idx += total_threads) {
     T value = output[idx];
-    const int out_idx = trans ? (idx / m_batch) : (idx % out_size);
+    const size_t out_idx = trans ? (idx / m_batch) : (idx % out_size);
     const T noise_std = out_noise_values[out_idx];
     stoch_value = curand_normal(&local_state);
     value += stoch_value * noise_std;
@@ -432,9 +451,11 @@ void ForwardBackwardPassIOManagedCuda<T>::applyOutputNoiseOtoO(
     const bool tranposed) {
 
   auto io = iom.getIO();
-  auto m_batch = iom.getMBatch();
+  const int m_batch = iom.getMBatch();
+  (void)RPU::cuda::checkedPositiveSize(m_batch, "output-noise batch");
   auto context = iom.getContext();
-  auto out_size = iom.getOutSize();
+  const size_t output_size =
+      RPU::cuda::checkedPositiveSize(iom.getOutSize(), "output-noise size");
   auto nblocks_om_batch = iom.getOutBlocksBatch(m_batch);
   auto nthreads = iom.getNThreads();
 
@@ -442,27 +463,29 @@ void ForwardBackwardPassIOManagedCuda<T>::applyOutputNoiseOtoO(
   T *out_temp = iom.getOutBuffer();
 
   kernelOutputNoiseOtoOBatch<<<nblocks_om_batch, nthreads, 0, context->getStream()>>>(
-      out_temp, out_size, out_trans, m_batch, mv_pars.out_noise_values.getDataConst(),
-      context_->getRandomStates(MIN(nblocks_om_batch * nthreads, out_size * m_batch)));
+      out_temp, output_size, out_trans, m_batch, mv_pars.out_noise_values.getDataConst(),
+      context_->getRandomStates(nblocks_om_batch * nthreads));
 }
 
 /* output non-linearity*/
 template <typename T>
 __global__ void kernelOutputNonLinearityBatch(
     T *output,
-    const int size,
-    const bool trans, // true if m_batch first dimensions
-    const int m_batch,
+    const size_t size,
+    const bool trans, // true if batch is the first dimension
+    const size_t m_batch,
     const T nonlinearity_factor,
     const T *nonlinearity) {
-  const int total_size = size * m_batch;
-  int tid = blockDim.x * blockIdx.x + threadIdx.x;
-  int total_threads = blockDim.x * gridDim.x;
+  const size_t total_size = size * m_batch;
+  size_t tid = static_cast<size_t>(blockDim.x) * static_cast<size_t>(blockIdx.x) +
+               static_cast<size_t>(threadIdx.x);
+  size_t total_threads =
+      static_cast<size_t>(blockDim.x) * static_cast<size_t>(gridDim.x);
   T nlf = nonlinearity_factor;
 
-  for (int idx = tid; idx < total_size; idx += total_threads) {
+  for (size_t idx = tid; idx < total_size; idx += total_threads) {
     T value = output[idx];
-    int out_idx = trans ? (idx / m_batch) : (idx % size);
+    size_t out_idx = trans ? (idx / m_batch) : (idx % size);
     value = nlf * value / ((T)1.0 + fabs(nonlinearity[out_idx] * value));
     output[idx] = value;
   }
@@ -480,9 +503,11 @@ void ForwardBackwardPassIOManagedCuda<T>::applyOutputNonLinearity(
     return;
   }
 
-  auto m_batch = iom.getMBatch();
+  const int m_batch = iom.getMBatch();
+  (void)RPU::cuda::checkedPositiveSize(m_batch, "output-nonlinearity batch");
   auto context = iom.getContext();
-  auto out_size = iom.getOutSize();
+  const size_t output_size =
+      RPU::cuda::checkedPositiveSize(iom.getOutSize(), "output-nonlinearity size");
   auto nblocks_om_batch = iom.getOutBlocksBatch(m_batch);
   auto nthreads = iom.getNThreads();
 
@@ -490,7 +515,7 @@ void ForwardBackwardPassIOManagedCuda<T>::applyOutputNonLinearity(
   T *out_temp = iom.getOutBuffer();
 
   kernelOutputNonLinearityBatch<<<nblocks_om_batch, nthreads, 0, context->getStream()>>>(
-      out_temp, out_size, out_trans, m_batch, mv_pars.out_nonlinearity_factor,
+      out_temp, output_size, out_trans, m_batch, mv_pars.out_nonlinearity_factor,
       mv_pars.out_nonlinearity.getDataConst());
 }
 
@@ -502,11 +527,14 @@ void ForwardBackwardPassIOManagedCuda<T>::applyIrDrop(
     return;
   }
 
-  auto m_batch = iom.getMBatch();
+  const int m_batch = iom.getMBatch();
+  (void)RPU::cuda::checkedPositiveSize(m_batch, "IR-drop batch");
   auto in_trans = iom.getInTrans();
   auto context = iom.getContext();
-  auto in_size = iom.getInSize();
-  auto out_size = iom.getOutSize();
+  const int in_size = iom.getInSize();
+  const int out_size = iom.getOutSize();
+  const size_t input_size = RPU::cuda::checkedPositiveSize(in_size, "IR-drop input");
+  const size_t output_size = RPU::cuda::checkedPositiveSize(out_size, "IR-drop output");
   auto nblocks_om_batch = iom.getOutBlocksBatch(m_batch);
   auto nthreads = iom.getNThreads();
 
@@ -523,16 +551,22 @@ void ForwardBackwardPassIOManagedCuda<T>::applyIrDrop(
   T *out_temp = iom.getOutBuffer();
 
   // unfortunately needs a lot of extra buffer memory (CUTLASS will help)
-  T *batch_buffer =
-      context->template getSharedBuffer<T>(RPU_BUFFER_TEMP_1, m_batch * max(in_size, out_size));
-  T *weight_buffer = context->template getSharedBuffer<T>(RPU_BUFFER_TEMP_3, in_size * out_size);
-  T *a_buffer = context->template getSharedBuffer<T>(RPU_BUFFER_TEMP_2, m_batch * out_size);
-  T *b_buffer = context->template getSharedBuffer<T>(RPU_BUFFER_TEMP_4, m_batch * out_size);
+  const size_t total_in_size =
+      RPU::cuda::checkedSizeProduct(m_batch, input_size, "IR-drop input");
+  const size_t total_out_size =
+      RPU::cuda::checkedSizeProduct(m_batch, output_size, "IR-drop output");
+  const size_t weight_size =
+      RPU::cuda::checkedSizeProduct(input_size, output_size, "IR-drop weights");
+  T *batch_buffer = context->template getSharedBuffer<T>(
+      RPU_BUFFER_TEMP_1, MAX(total_in_size, total_out_size));
+  T *weight_buffer = context->template getSharedBuffer<T>(RPU_BUFFER_TEMP_3, weight_size);
+  T *a_buffer = context->template getSharedBuffer<T>(RPU_BUFFER_TEMP_2, total_out_size);
+  T *b_buffer = context->template getSharedBuffer<T>(RPU_BUFFER_TEMP_4, total_out_size);
 
   // compute thr abs weights current
-  RPU::math::elemabs(context_, weight_buffer, dev_weights, in_size * out_size);
+  RPU::math::elemabs(context_, weight_buffer, dev_weights, weight_size);
 
-  RPU::math::elemabs(context_, batch_buffer, in_temp, in_size * m_batch);
+  RPU::math::elemabs(context_, batch_buffer, in_temp, total_in_size);
 
   // compute the a_i
   this->gemm(
@@ -541,7 +575,7 @@ void ForwardBackwardPassIOManagedCuda<T>::applyIrDrop(
 
   // compute x_j*(1-(1-j/n)^2)
   kernelInputPositionCoding<<<nblocks_om_batch, nthreads, 0, context_->getStream()>>>(
-      batch_buffer, in_temp, in_size, m_batch, in_trans);
+      batch_buffer, in_temp, input_size, m_batch, in_trans);
 
   // compute the position filtered GEMM
   this->gemm(
@@ -554,7 +588,7 @@ void ForwardBackwardPassIOManagedCuda<T>::applyIrDrop(
       out_temp,          // in-place
       a_buffer,          // this is the a_i
       b_buffer,          // this is GEMM_i
-      out_size * m_batch // all have same shape
+      total_out_size // all have same shape
   );
 
   context->template releaseSharedBuffer<T>(RPU_BUFFER_TEMP_1);
@@ -567,22 +601,24 @@ void ForwardBackwardPassIOManagedCuda<T>::applyIrDrop(
 template <typename T>
 __global__ void kernelOutputVoffsetBatch(
     T *output,
-    const int size,
-    const bool trans, // true if m_batch first dimensions
-    const int m_batch,
+    const size_t size,
+    const bool trans, // true if batch is the first dimension
+    const size_t m_batch,
     const T r_series,
     const T *v_offset,
     const T *y_ref_values,
     const T rs_max_total) {
-  const int total_size = size * m_batch;
-  int tid = blockDim.x * blockIdx.x + threadIdx.x;
-  int total_threads = blockDim.x * gridDim.x;
+  const size_t total_size = size * m_batch;
+  size_t tid = static_cast<size_t>(blockDim.x) * static_cast<size_t>(blockIdx.x) +
+               static_cast<size_t>(threadIdx.x);
+  size_t total_threads =
+      static_cast<size_t>(blockDim.x) * static_cast<size_t>(gridDim.x);
   T rs = r_series;
 
-  for (int idx = tid; idx < total_size; idx += total_threads) {
+  for (size_t idx = tid; idx < total_size; idx += total_threads) {
     T y = output[idx];
-    int out_idx = trans ? (idx / m_batch) : (idx % size);
-    int b_idx = trans ? (idx % m_batch) : (idx / size);
+    size_t out_idx = trans ? (idx / m_batch) : (idx % size);
+    size_t b_idx = trans ? (idx % m_batch) : (idx / size);
     T v_offs = v_offset[out_idx];
     T y_ref = (y_ref_values == nullptr) ? (T)0.0 : y_ref_values[b_idx];
     T y_pos = y + y_ref;
@@ -607,11 +643,14 @@ void ForwardBackwardPassIOManagedCuda<T>::applyVoltageOffsets(
     return;
   }
 
-  auto m_batch = iom.getMBatch();
+  const int m_batch = iom.getMBatch();
+  (void)RPU::cuda::checkedPositiveSize(m_batch, "voltage-offset batch");
   auto in_trans = iom.getInTrans();
   auto context = iom.getContext();
-  auto in_size = iom.getInSize();
-  auto out_size = iom.getOutSize();
+  const int in_size = iom.getInSize();
+  const int out_size = iom.getOutSize();
+  const size_t input_size = RPU::cuda::checkedPositiveSize(in_size, "voltage-offset input");
+  const size_t output_size = RPU::cuda::checkedPositiveSize(out_size, "voltage-offset output");
   auto nblocks_om_batch = iom.getOutBlocksBatch(m_batch);
   auto nthreads = iom.getNThreads();
 
@@ -624,8 +663,8 @@ void ForwardBackwardPassIOManagedCuda<T>::applyVoltageOffsets(
     y_ref = context->template getSharedBuffer<T>(RPU_BUFFER_TEMP_2, m_batch);
 
     // reduce x
-    if (!dev_ones_ || dev_ones_->getSize() < in_size) {
-      dev_ones_ = RPU::make_unique<CudaArray<T>>(context, in_size);
+    if (!dev_ones_ || dev_ones_->getSize() < input_size) {
+      dev_ones_ = RPU::make_unique<CudaArray<T>>(context, input_size);
       dev_ones_->setConst((T)1.0);
     }
 
@@ -638,7 +677,7 @@ void ForwardBackwardPassIOManagedCuda<T>::applyVoltageOffsets(
   }
 
   kernelOutputVoffsetBatch<<<nblocks_om_batch, nthreads, 0, context->getStream()>>>(
-      out_temp, out_size, out_trans, m_batch, MAX(io.r_series, (T)0.0),
+      out_temp, output_size, out_trans, m_batch, MAX(io.r_series, (T)0.0),
       mv_pars.v_offset.getDataConst(), y_ref, io.r_series_max_total);
 
   if (y_ref != nullptr) {
@@ -725,8 +764,10 @@ bool ForwardBackwardPassIOManagedCuda<T>::computeAnalogMV(
     int m_batch = iom.getMBatch();
     int in_size = iom.getInSize();
     int out_size = iom.getOutSize();
-    int total_in_size = m_batch * in_size;
-    int total_out_size = m_batch * out_size;
+    size_t total_in_size =
+        RPU::cuda::checkedPositiveProduct(m_batch, in_size, "separate-pass input");
+    size_t total_out_size =
+        RPU::cuda::checkedPositiveProduct(m_batch, out_size, "separate-pass output");
     auto io = iom.getIO();
 
     T *pos_neg_buffer_in = context_->template getSharedBuffer<T>(
@@ -742,8 +783,11 @@ bool ForwardBackwardPassIOManagedCuda<T>::computeAnalogMV(
     // neg part
     RPU::math::elemmin(this->context_, pos_neg_buffer_in, total_in_size, (T)0.0, in_temp);
 
-    int w_size = this->d_size_ * this->x_size_;
-    if (io.w_read_asymmetry_dtod > (T)0.0 && (in_size * out_size == w_size)) {
+    size_t w_size = RPU::cuda::checkedPositiveProduct(
+        this->d_size_, this->x_size_, "separate-pass weights");
+    if (io.w_read_asymmetry_dtod > (T)0.0 &&
+        RPU::cuda::checkedPositiveProduct(in_size, out_size, "separate-pass dimensions") ==
+            w_size) {
       neg_weights = context_->template getSharedBuffer<T>(RPU_BUFFER_WEIGHT, w_size);
       RPU::math::elemmul(
           context_, neg_weights, w_size, dev_weights, mv_pars.w_asymmetry.getDataConst());
@@ -779,8 +823,10 @@ bool ForwardBackwardPassIOManagedCuda<T>::computeAnalogMV(
     int m_batch = iom.getMBatch();
     int in_size = iom.getInSize();
     int out_size = iom.getOutSize();
-    int total_in_size = m_batch * in_size;
-    int total_out_size = m_batch * out_size;
+    size_t total_in_size =
+        RPU::cuda::checkedPositiveProduct(m_batch, in_size, "digital-sum input");
+    size_t total_out_size =
+        RPU::cuda::checkedPositiveProduct(m_batch, out_size, "digital-sum output");
     auto io = iom.getIO();
     T *pos_neg_buffer_in = context_->template getSharedBuffer<T>(
         RPU_BUFFER_POS_NEG_IN, MAX(total_in_size, total_out_size));
@@ -795,8 +841,10 @@ bool ForwardBackwardPassIOManagedCuda<T>::computeAnalogMV(
     // neg part
     RPU::math::elemmin(this->context_, pos_neg_buffer_in, total_in_size, (T)0.0, in_temp);
 
-    int w_size = this->d_size_ * this->x_size_;
-    if (io.w_read_asymmetry_dtod > (T)0.0 && (in_size * out_size == w_size)) {
+    size_t w_size = RPU::cuda::checkedPositiveProduct(
+        this->d_size_, this->x_size_, "digital-sum weights");
+    if (io.w_read_asymmetry_dtod > (T)0.0 &&
+        RPU::cuda::checkedPositiveProduct(in_size, out_size, "digital-sum dimensions") == w_size) {
       neg_weights = context_->template getSharedBuffer<T>(RPU_BUFFER_WEIGHT, w_size);
       RPU::math::elemmul(
           context_, neg_weights, w_size, dev_weights, mv_pars.w_asymmetry.getDataConst());
