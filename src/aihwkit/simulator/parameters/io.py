@@ -128,12 +128,7 @@ class IOParameters(_PrintableMixin):
 
     bound_management: BoundManagementType = BoundManagementType.ITERATIVE
 
-    """Type of bound management, see :class:`BoundManagementType`.
-
-    Caution:
-        Bound management is **only** available for the forward pass. It
-        will be ignored when used for the backward pass.
-    """
+    """Type of bound management, see :class:`BoundManagementType`."""
 
     noise_management: NoiseManagementType = NoiseManagementType.ABS_MAX
     """Type of noise management, see :class:`NoiseManagementType`."""

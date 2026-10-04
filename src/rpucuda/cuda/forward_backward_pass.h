@@ -234,16 +234,34 @@ public:
             m_batch, alpha * b_io.out_scale);
         return;
       }
-    } else {
-      // input management
-      if (b_io.bound_management != BoundManagementType::None) {
-        RPU_FATAL("Bound management is not supported for backward pass.");
-      }
     }
 
-    b_iom.initWithInput(D_input, b_io, in_size, m_batch, d_trans, alpha);
-    b_iom.applyToInput(D_input);
-    computeAnalogMV(X_output, x_trans, dev_weights, b_iom, fb_pars_.bwd, true);
+    b_iom.initWithInput(D_input, b_io, in_size, m_batch, d_trans, alpha, /*is_test=*/false);
+    if (b_io.isPerfect() || b_io.bound_management == BoundManagementType::None) {
+      // Preserve the single-pass kernels and direct output path when BM is disabled.
+      b_iom.applyToInput(D_input);
+      computeAnalogMV(X_output, x_trans, dev_weights, b_iom, fb_pars_.bwd, true);
+    } else {
+      T *in_buffer = b_iom.getInBuffer();
+      // Indexed output iterators scatter-add: publish only the final attempt.
+      // Dense outputs can still be overwritten directly without an extra copy.
+      T *out_buffer = std::is_same<OutputIteratorT, T *>::value
+                          ? RPU::math::fakeCast<T, OutputIteratorT>(X_output)
+                          : b_iom.getOutBuffer();
+      bool bound_test_passed = false;
+      while (!bound_test_passed) {
+        // Split positive/negative MVMs temporarily replace the input buffer.
+        b_iom.setInBuffer(in_buffer);
+        b_iom.applyToInput(D_input);
+        bound_test_passed =
+            computeAnalogMV(out_buffer, x_trans, dev_weights, b_iom, fb_pars_.bwd, true);
+      }
+      b_iom.setInBuffer(in_buffer);
+      if (!std::is_same<OutputIteratorT, T *>::value) {
+        RPU::math::copyWithIterator(
+            b_iom.getContext(), X_output, static_cast<const T *>(out_buffer), m_batch * out_size);
+      }
+    }
     b_iom.releaseBuffer();
   }
 

@@ -177,6 +177,42 @@ inline T computeNoiseManagement(
   }
 }
 
+// Share BM retries; the caller supplies the direction-specific MVM and output buffer.
+template <typename T, typename ComputePass>
+inline T runBoundManagedMV(
+    const T *input,
+    const int in_size,
+    const int in_inc,
+    const IOMetaParameter<T> &io,
+    T &aux_nm_value,
+    T nm_scale_value,
+    ComputePass compute_pass) {
+  bool use_nm_scale = io.noise_management != NoiseManagementType::None;
+  T reduction = (T)0.5;
+  T scale = (T)1.0;
+  int round = 0;
+  bool bound_test_passed = false;
+
+  while (!bound_test_passed) {
+    reduction *= (T)2.0;
+    if (round == 1 && io.bound_management == BoundManagementType::IterativeWorstCase &&
+        io.noise_management != NoiseManagementType::AbsMaxNPSum) {
+      nm_scale_value = computeNoiseManagement(
+          input, in_size, in_inc, NoiseManagementType::AbsMaxNPSum, aux_nm_value, io);
+      reduction = (T)1.0;
+      use_nm_scale = true;
+    }
+    round++;
+
+    scale = use_nm_scale && nm_scale_value > (T)0.0 ? (T)1.0 / nm_scale_value : (T)1.0;
+    scale /= reduction;
+    bound_test_passed = compute_pass(scale);
+    bound_test_passed = bound_test_passed || (reduction > (T)io.max_bm_factor) ||
+                        (io.inp_res > (T)0.0 && reduction > io.max_bm_res / io.inp_res);
+  }
+  return scale;
+}
+
 /*********************************************************************/
 /* Noisy forward / backward pass with ADC/DAC and IO management*/
 
@@ -933,57 +969,24 @@ void ForwardBackwardPassIOManaged<T>::forwardVector(
     return;
   }
 
-  T out_scale = (T)1.0;
-  out_scale = f_io_.out_scale * alpha;
-
-  bool bound_test_passed = false;
-  T reduction_due_to_bound_management = 0.5;
-  T scale = 1.;
-  bool scaling = false;
-
-  int bm_round = 0;
-  while (bound_test_passed == false) {
-
-    bound_test_passed = true;
-    reduction_due_to_bound_management *= 2.0;
-
-    if (bm_round == 1 && f_io_.bound_management == BoundManagementType::IterativeWorstCase &&
-        f_io_.noise_management != NoiseManagementType::AbsMaxNPSum) {
-      nm_scale_value = computeNoiseManagement(
-          x_input, this->x_size_, x_inc, NoiseManagementType::AbsMaxNPSum, aux_nm_value_, f_io_);
-      reduction_due_to_bound_management = 1.0; // reset to 1.0
-      nm = true; // The NPSum retry enables NM even if the first pass had none.
-    }
-
-    bm_round++;
-
-    scaling = false;
-    scale = (T)1.0;
-
-    if (nm && nm_scale_value > (T)0.0) {
-      scale /= nm_scale_value;
-      scaling = true;
-    }
-
-    if (bm) {
-      scale /= reduction_due_to_bound_management;
-      scaling = true;
-    }
-
-    bound_test_passed = computeAnalogMV(
-        weights, x_input, this->x_size_, x_inc, d_output, this->d_size_, d_inc, scale, scaling,
-        this->fb_pars_.fwd, f_io_, false, is_test);
-
-    if (bm) {
-      bound_test_passed =
-          bound_test_passed || (((int)reduction_due_to_bound_management > f_io_.max_bm_factor) ||
-                                ((f_io_.inp_res > (T)0.0) && (reduction_due_to_bound_management >
-                                                              f_io_.max_bm_res / f_io_.inp_res)));
-    } else {
-      bound_test_passed = true;
-    }
+  T out_scale = f_io_.out_scale * alpha;
+  if (bm) {
+    T scale = runBoundManagedMV(
+        x_input, this->x_size_, x_inc, f_io_, aux_nm_value_, nm_scale_value,
+        [this, weights, x_input, x_inc, d_output, d_inc, is_test](T scale) {
+          return computeAnalogMV(
+              weights, x_input, this->x_size_, x_inc, d_output, this->d_size_, d_inc, scale, true,
+              this->fb_pars_.fwd, f_io_, false, is_test);
+        });
+    RPU::math::scal<T>(this->d_size_, out_scale / scale, d_output, d_inc);
+    return;
   }
 
+  bool scaling = nm && nm_scale_value > (T)0.0;
+  T scale = scaling ? (T)1.0 / nm_scale_value : (T)1.0;
+  computeAnalogMV(
+      weights, x_input, this->x_size_, x_inc, d_output, this->d_size_, d_inc, scale, scaling,
+      this->fb_pars_.fwd, f_io_, false, is_test);
   if (scaling || out_scale != (T)1.0) {
     RPU::math::scal<T>(this->d_size_, out_scale / scale, d_output, d_inc);
   }
@@ -1001,14 +1004,14 @@ void ForwardBackwardPassIOManaged<T>::backwardVector(
   }
 
   // io managed version
-  b_io_.bound_management = BoundManagementType::None; // not supported
   T nm_scale_value = computeNoiseManagement(
       d_input, this->d_size_, d_inc, b_io_.noise_management, aux_nm_value_, b_io_);
   bool nm = b_io_.noise_management != NoiseManagementType::None;
+  bool bm = b_io_.bound_management != BoundManagementType::None;
   T out_scale = b_io_.out_scale * alpha;
   bool scaling = nm && nm_scale_value > (T)0.0;
 
-  if (nm && (nm_scale_value <= (T)0.0)) {
+  if (nm && (nm_scale_value <= (T)0.0) && (!bm || b_io_.inp_noise <= (T)0.0)) {
     // max is zero. output is just zero. short-cut
     int j_x = 0;
     PRAGMA_SIMD
@@ -1019,6 +1022,19 @@ void ForwardBackwardPassIOManaged<T>::backwardVector(
     return;
   }
 
+  if (bm) {
+    T scale = runBoundManagedMV(
+        d_input, this->d_size_, d_inc, b_io_, aux_nm_value_, nm_scale_value,
+        [this, weights, d_input, d_inc, x_output, x_inc](T scale) {
+          return computeAnalogMV(
+              weights, d_input, this->d_size_, d_inc, x_output, this->x_size_, x_inc, scale, true,
+              this->fb_pars_.bwd, b_io_, true, false);
+        });
+    RPU::math::scal<T>(this->x_size_, out_scale / scale, x_output, x_inc);
+    return;
+  }
+
+  // Keep the unmanaged backward path and its numerical conventions unchanged.
   computeAnalogMV(
       weights, d_input, this->d_size_, d_inc, x_output, this->x_size_, x_inc,
       (T)1.0 / nm_scale_value, scaling, this->fb_pars_.bwd, b_io_, true, false);

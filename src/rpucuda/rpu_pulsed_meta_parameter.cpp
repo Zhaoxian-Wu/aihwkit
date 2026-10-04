@@ -115,9 +115,12 @@ template <typename T> void IOMetaParameter<T>::initializeForBackward(int x_size,
       this->inp_bound = std::numeric_limits<T>::infinity();
     }
 
-    if (this->bound_management != BoundManagementType::None) {
-      this->bound_management = BoundManagementType::None;
-      // keep silent.
+    if (this->bound_management != BoundManagementType::None &&
+        this->bound_management != BoundManagementType::Iterative &&
+        this->bound_management != BoundManagementType::IterativeWorstCase) {
+      RPU_FATAL(
+          "Supported backward bound management types are None, Iterative, and "
+          "IterativeWorstCase.");
     }
 
     if (v_offset_vec.size() > 0 && v_offset_vec.size() != (size_t)x_size) {

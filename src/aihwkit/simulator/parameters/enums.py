@@ -62,8 +62,7 @@ class BoundManagementType(Enum):
     inputs iteratively halved, when the output bound was hit.
 
     Caution:
-        Bound management is **only** available for the forward pass. It
-        will be ignored when used for the backward pass.
+        Perfect I/O bypasses bound management in both directions.
     """
 
     NONE = "None"
@@ -80,8 +79,8 @@ class BoundManagementType(Enum):
     """Worst case bound management.
 
     Uses the configured noise management for the first pass. If the output
-    bound is hit, uses ``AbsMaxNPSum`` for the second pass. Further passes
-    halve the input until the bound is met or a retry limit is reached.
+    bound is hit, switches to ``AbsMaxNPSum`` for the second pass. Further
+    passes halve the input until the bound is met or a retry limit is reached.
     """
 
     SHIFT = "Shift"
