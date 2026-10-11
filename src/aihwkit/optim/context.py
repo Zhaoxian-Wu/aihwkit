@@ -10,7 +10,7 @@
 
 from typing import Optional, Type, Union, Any, List, TYPE_CHECKING
 
-from torch import dtype, Tensor, no_grad
+from torch import cat, dtype, Tensor, no_grad, ones_like
 from torch._C import DisableTorchFunction
 from torch.nn import Parameter
 from torch import device as torch_device
@@ -147,6 +147,7 @@ class AnalogContext(Parameter):
         self._data_view_mode = AnalogContextDataViewMode.PLACEHOLDER
         self._data_buffer = None  # type: Optional[Tensor]
         self.digital_grad_accumulation = False
+        self.digital_grad_use_pre_update = False
         self.analog_input = []  # type: list
         self.analog_grad_output = []  # type: list
         self.reset(analog_tile)
@@ -418,16 +419,69 @@ class AnalogContext(Parameter):
         """Set the context to forward_indexed."""
         self.use_indexed = value
 
-    def set_digital_grad_accumulation(self, value: bool = True) -> None:
-        """Enable immediate digital gradient accumulation during backward.
+    def set_digital_grad_accumulation(
+        self,
+        value: bool = True,
+        *,
+        use_pre_update: bool = False,
+    ) -> None:
+        """Enable incremental digital W-gradient accumulation during backward.
 
-        When enabled, ``AnalogFunction.backward`` computes the digital rank
-        update from the current ``x`` and ``d`` tensors and accumulates it in
-        ``self.grad`` instead of retaining the tensors in ``analog_input`` and
-        ``analog_grad_output``. Optimizers that enable this mode are expected to
-        consume ``AnalogContext.grad`` directly.
+        Each backward forms the digital outer product, or batched matrix
+        product, G = D.T @ X and adds it to self.grad immediately. This avoids
+        retaining all X/D traces across gradient-accumulation micro-batches.
+        It reduces trace storage; it does not remove the W-gradient matmul or
+        guarantee faster execution than one larger, deferred batched matmul.
+        A digital optimizer must consume self.grad explicitly; ordinary
+        AnalogSGD's trace-based step does not automatically consume it.
+
+        Define W = diag(s) W_hat, where s is mapping_scales (or one if absent).
+        A native learnable output alpha is a separate digital multiplier:
+        y = diag(alpha) W X. The native backward error is D = alpha * dL/dy,
+        so default accumulation gives G = dL/dW. No mapping or output scale
+        is removed from D. Additional outer operations contribute their own
+        chain factors through autograd. Alpha's derivative and the input
+        gradient retain the ordinary chain rule, including when alpha is zero.
+        Adam or another W-space optimizer can process G first and then convert
+        its optimized increment to W_hat units by division by s, exactly once.
+
+        For scalar or output-row mapping s and mapping LR factor ell,
+        early pre_update computes D / (s * ell). Its outer product is
+        diag(1 / (s * ell)) G. Plain MP-SGD can accumulate in these write-command
+        units instead of dividing its final matrix; a matching residual
+        convention and backend LR eta * ell yield the physical increment
+        -eta * diag(1 / s) G. Alpha's chain factor stays in G in both paths;
+        native pre_update does not invert alpha. The consumer must not apply
+        the same write conversion a second time. Existing project logical
+        optimizers, including logical MP-SGD, require use_pre_update=False.
+
+        With N samples/token positions, Din inputs and Dout outputs, early
+        error scaling costs O(N * Dout) per backward, whereas a final matrix
+        conversion costs O(Dout * Din) per optimizer step. The outer product
+        itself still costs O(N * Dout * Din). O(D) versus O(D**2) applies to a
+        single sample on a square tile; early costs sum over all micro-batches
+        and are not necessarily smaller. Fixed row-vector scales commute with
+        the outer product just as fixed scalar scales do. Dynamic mapping
+        scales require a defined update order and consistent residual units.
+        Adaptive/nonlinear optimizer operations and clipping generally do not
+        commute with conversion, so they must operate in the intended units.
+        Input-range/clipping preprocessing also changes this simple algebra.
+
+        This switch affects W-gradient accumulation only. The input gradient
+        uses the tile's normal backward path, including pre_backward, regardless
+        of use_pre_update. Accumulation does not trigger another backward read.
+        With value=False, the original X/D traces are retained unchanged.
+
+        Args:
+            value: Accumulate immediately instead of retaining X/D traces.
+            use_pre_update: Apply native write preprocessing before the outer
+                product. False keeps W gradients; True requires a matching
+                optimizer and residual/write protocol in command units.
+
+        This runtime configuration must be restored after tile loading.
         """
-        self.digital_grad_accumulation = value
+        self.digital_grad_use_pre_update = bool(use_pre_update)
+        self.digital_grad_accumulation = bool(value)
 
     def get_data(self) -> Tensor:
         """Get a detached tensor from the active public data view."""
@@ -460,7 +514,13 @@ class AnalogContext(Parameter):
 
     @no_grad()
     def accumulate_digital_gradient(self, x_input: Tensor, d_input: Tensor) -> None:
-        """Accumulate the digital weight gradient from an analog backward trace."""
+        """Accumulate the W-gradient from the supplied native backward error.
+
+        By default grad += D.T @ X, without pre_update/pre_backward or any
+        scale inversion. Direct callers supply the error before mapping write
+        preprocessing, including all outer-output chain factors. If enabled,
+        use_pre_update transforms X/D before the product into command units.
+        """
         if self.use_indexed:
             raise NotImplementedError(
                 "Digital gradient accumulation does not support indexed updates."
@@ -469,9 +529,12 @@ class AnalogContext(Parameter):
         analog_tile: Any = self.analog_tile
         x_dim = 0 if analog_tile.in_trans else x_input.dim() - 1
         d_dim = 0 if analog_tile.out_trans else d_input.dim() - 1
-        x_input, d_input = analog_tile.pre_update(x_input, x_dim, d_input, d_dim)
+        if self.digital_grad_use_pre_update:
+            x_input, d_input = analog_tile.pre_update(x_input, x_dim, d_input, d_dim)
 
         x_matrix = self._reshape_update_tensor(x_input, x_dim)
+        if analog_tile.analog_bias:
+            x_matrix = cat((x_matrix, ones_like(x_matrix[:, :1])), dim=1)
         d_matrix = self._reshape_update_tensor(d_input, d_dim)
         grad = d_matrix.transpose(0, 1).matmul(x_matrix)
 

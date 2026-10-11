@@ -56,17 +56,28 @@ class AnalogOptimizerMixin:
         for group in analog_param_groups:
             self.add_param_group(group)  # type: ignore[attr-defined]
 
-    def set_digital_grad_accumulation(self, value: bool = True) -> None:
+    def set_digital_grad_accumulation(
+        self,
+        value: bool = True,
+        *,
+        use_pre_update: bool = False,
+    ) -> None:
         """Enable immediate digital gradient accumulation on analog contexts.
 
         This mode is intended for optimizers that consume ``AnalogContext.grad``
         directly instead of using the retained ``x`` and ``d`` traces for tile
-        updates. It must be enabled before calling ``backward()``.
+        updates. It must be enabled before calling ``backward()``. By default
+        gradients target mapped weights W = diag(s) W_hat. use_pre_update applies
+        native write preprocessing before the digital outer product and requires
+        an optimizer/residual protocol in those units. It does not affect input
+        gradients or their pre_backward processing. See
+        AnalogContext.set_digital_grad_accumulation for the MP-SGD equivalence
+        conditions, scaling costs and learnable-scale chain rules.
         """
         for group in self.param_groups:  # type: ignore[has-type]
             for param in group["params"]:
                 if isinstance(param, AnalogContext):
-                    param.set_digital_grad_accumulation(value)
+                    param.set_digital_grad_accumulation(value, use_pre_update=use_pre_update)
 
     def zero_grad(self, *args: Any, **kwargs: Any) -> None:
         """Clear digital gradients and retained analog traces."""

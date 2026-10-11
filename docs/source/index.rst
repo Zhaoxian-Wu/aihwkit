@@ -46,6 +46,7 @@ Welcome to IBM Analog Hardware Acceleration Kit's documentation!
    :hidden:
 
    analog_update.rst
+   digital_grad_coordinates.rst
    analog_training_presets.rst
 
 
