@@ -13,6 +13,7 @@ from typing import Optional, Type, Union, Any, List, TYPE_CHECKING
 from torch import cat, dtype, Tensor, no_grad, ones_like
 from torch._C import DisableTorchFunction
 from torch.nn import Parameter
+from torch.nn.grad import conv1d_weight, conv2d_weight, conv3d_weight
 from torch import device as torch_device
 from torch.utils._pytree import tree_map
 
@@ -25,6 +26,7 @@ from aihwkit.optim.weight_view import (
     _raise_placeholder_read_error,
 )
 from aihwkit.simulator.parameters.enums import AnalogContextDataViewMode
+from aihwkit.simulator.parameters.convolution import ConvParameters
 
 if TYPE_CHECKING:
     from aihwkit.simulator.tiles.base import SimulatorTileWrapper
@@ -513,20 +515,59 @@ class AnalogContext(Parameter):
         return tensor.reshape(-1, tensor.size(-1))
 
     @no_grad()
-    def accumulate_digital_gradient(self, x_input: Tensor, d_input: Tensor) -> None:
+    def accumulate_digital_gradient(
+        self,
+        x_input: Tensor,
+        d_input: Tensor,
+        *,
+        indexed_conv_parameters: Optional[ConvParameters] = None,
+    ) -> None:
         """Accumulate the W-gradient from the supplied native backward error.
 
         By default grad += D.T @ X, without pre_update/pre_backward or any
         scale inversion. Direct callers supply the error before mapping write
         preprocessing, including all outer-output chain factors. If enabled,
         use_pre_update transforms X/D before the product into command units.
+        Indexed convolutions use PyTorch's convolution weight-gradient backend.
+        indexed_conv_parameters optionally supplies the metadata saved by that
+        forward. Arbitrary index matrices without convolution metadata are not
+        supported in this mode. Convolution gradients follow PyTorch's backend
+        precision settings, including cuDNN TF32 on CUDA.
         """
-        if self.use_indexed:
-            raise NotImplementedError(
-                "Digital gradient accumulation does not support indexed updates."
-            )
-
         analog_tile: Any = self.analog_tile
+        if self.use_indexed:
+            parameters = indexed_conv_parameters
+            if parameters is None:
+                parameters = getattr(analog_tile, "indexed_conv_parameters", None)
+            if parameters is None:
+                raise RuntimeError(
+                    "Indexed digital gradients require standard convolution parameters; "
+                    "use an AnalogConv layer or pass convolution_parameters to set_indexed()"
+                )
+            if self.digital_grad_use_pre_update:
+                x_input, d_input = analog_tile.pre_update(x_input, 1, d_input, 1)
+            dimension = len(parameters.kernel_size)
+            if dimension not in (1, 2, 3) or x_input.dim() != dimension + 2:
+                raise RuntimeError("Indexed digital gradients require NC(D)HW convolution inputs")
+            weight_size = (analog_tile.out_size, x_input.size(1)) + parameters.kernel_size
+            weight_gradient = (conv1d_weight, conv2d_weight, conv3d_weight)[dimension - 1]
+            grad = weight_gradient(
+                x_input,
+                weight_size,
+                d_input,
+                stride=parameters.stride,
+                padding=parameters.padding,
+                dilation=parameters.dilation,
+            ).flatten(1)
+            if analog_tile.analog_bias:
+                bias_grad = d_input.flatten(2).sum((0, 2)).unsqueeze(1)
+                grad = cat((grad, bias_grad), dim=1)
+            if self.grad is None:
+                self.grad = grad
+            else:
+                self.grad.add_(grad)
+            return
+
         x_dim = 0 if analog_tile.in_trans else x_input.dim() - 1
         d_dim = 0 if analog_tile.out_trans else d_input.dim() - 1
         if self.digital_grad_use_pre_update:

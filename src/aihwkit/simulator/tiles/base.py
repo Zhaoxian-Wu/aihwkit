@@ -669,6 +669,7 @@ class SimulatorTileWrapper:
 
         # this is should not be saved.
         current_dict.pop("image_sizes", None)
+        current_dict.pop("indexed_conv_parameters", None)
         # Shared weight tensor is rebuilt by _bind_shared_weights().
         current_dict.pop("_shared_weight_tensor", None)
 
@@ -716,6 +717,7 @@ class SimulatorTileWrapper:
             hidden_parameters_names = current_dict.pop(SN.HIDDEN_PARAMETER_NAMES, [])
             current_dict.pop("analog_alpha_scale", None)  # legacy
             current_dict.pop("image_sizes", None)  # should not be saved
+            current_dict.pop("indexed_conv_parameters", None)
 
             # legacy
             if "non_blocking" not in current_dict:

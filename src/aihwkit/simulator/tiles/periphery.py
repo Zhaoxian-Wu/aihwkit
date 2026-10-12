@@ -10,6 +10,7 @@
 """Base tile with added periphery and common utility methods."""
 
 from typing import Optional, Tuple, Union, Any, List
+from math import prod
 from numpy import array
 
 from torch import (
@@ -38,6 +39,7 @@ from aihwkit.exceptions import TileError, ConfigError
 from aihwkit.simulator.tiles.base import BaseTile, SimulatorTileWrapper, SimulatorTile
 
 from aihwkit.simulator.parameters.mapping import MappingParameter
+from aihwkit.simulator.parameters.convolution import ConvParameters
 from aihwkit.simulator.parameters.pre_post import PrePostProcessingRPU, InputRangeParameter
 from aihwkit.simulator.digital_low_precision.base_quantized_classes import QuantizationManager
 from aihwkit.simulator.digital_low_precision.quantizers import QMethods
@@ -84,6 +86,7 @@ class TileWithPeriphery(BaseTile, SimulatorTileWrapper):
         self.bias_quantizer = None  # type: Optional[QuantizationManager]
 
         self.image_sizes = []  # type: List[int]
+        self.indexed_conv_parameters = None  # type: Optional[ConvParameters]
 
         if self.digital_bias:
             # Note that the bias needs to be handled on the module level
@@ -1264,16 +1267,26 @@ class TileWithPeriphery(BaseTile, SimulatorTileWrapper):
             raise TileError("Expects to find `has_matrix_indices` for indexed interface.")
         return self.tile.has_matrix_indices()
 
-    def set_indexed(self, indices: Tensor, image_sizes: List) -> None:
+    def set_indexed(
+        self,
+        indices: Tensor,
+        image_sizes: List[int],
+        *,
+        convolution_parameters: Optional[ConvParameters] = None,
+    ) -> None:
         """Set the index matrix for convolutions and switches to
         indexed forward/backward/update versions.
 
         Args:
-            indices : torch.tensor with int indices
+            indices: Tensor with convolution indices for the native interface.
             image_sizes: [C_in, H_in, W_in, H_out, W_out] sizes
+            convolution_parameters: Standard convolution represented by the
+                indices. Required for indexed digital gradient accumulation.
+                Omitting it clears any previously installed convolution metadata.
 
         Raises:
             ValueError: if ``image_sizes`` does not have valid dimensions
+                or convolution parameters do not match the tile geometry.
             TileError: if the tile uses transposition or indexed not supported..
         """
         if isinstance(self.tile, SimulatorTile):
@@ -1287,9 +1300,27 @@ class TileWithPeriphery(BaseTile, SimulatorTileWrapper):
 
         if self.in_trans or self.out_trans:
             raise TileError("Transposed indexed versions not supported (assumes NC(D)HW)")
+
+        if convolution_parameters is not None:
+            dimension = (len(image_sizes) - 1) // 2
+            if (
+                any(
+                    len(values) != dimension
+                    for values in (
+                        convolution_parameters.kernel_size,
+                        convolution_parameters.stride,
+                        convolution_parameters.padding,
+                        convolution_parameters.dilation,
+                    )
+                )
+                or image_sizes[0] * prod(convolution_parameters.kernel_size) != self.in_size
+            ):
+                raise ValueError("Convolution parameters do not match the indexed tile geometry")
+
         self.analog_ctx.set_indexed()
         self.image_sizes = image_sizes
         self.tile.set_matrix_indices(indices)
+        self.indexed_conv_parameters = convolution_parameters
 
     @no_grad()
     def joint_forward_indexed(

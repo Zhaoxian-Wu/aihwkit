@@ -13,6 +13,7 @@ Submodules
    :maxdepth: 4
 
    aihwkit.simulator.parameters.base
+   aihwkit.simulator.parameters.convolution
    aihwkit.simulator.parameters.enums
    aihwkit.simulator.parameters.helpers
    aihwkit.simulator.parameters.inference

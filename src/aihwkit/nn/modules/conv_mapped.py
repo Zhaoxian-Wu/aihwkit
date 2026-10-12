@@ -21,6 +21,7 @@ from aihwkit.simulator.tiles.module import TileModule
 from aihwkit.exceptions import AnalogBiasConfigError, ModuleError, ConfigError
 from aihwkit.simulator.parameters.base import RPUConfigBase
 from aihwkit.simulator.parameters.mapping import MappableRPU
+from aihwkit.simulator.parameters.convolution import ConvParameters
 
 
 class _AnalogConvNdMapped(AnalogLayerBase, _ConvNd):
@@ -205,7 +206,13 @@ class _AnalogConvNdMapped(AnalogLayerBase, _ConvNd):
             self.fold_indices_lst.append(fold_indices)
 
             for analog_tile in in_tiles:
-                analog_tile.set_indexed(fold_indices, image_sizes)
+                analog_tile.set_indexed(
+                    fold_indices,
+                    image_sizes,
+                    convolution_parameters=ConvParameters(
+                        self.kernel_size, self.stride, self.padding, self.dilation
+                    ),
+                )
 
     def _single_unfold(self, analog_tile: "TileModule", x_input: Tensor) -> Tensor:
         """Forward using explicit unfolding (more suitable for CPUs)"""

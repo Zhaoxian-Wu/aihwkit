@@ -42,6 +42,9 @@ class AnalogFunction(Function):
         runtime = analog_tile.get_runtime()
 
         use_indexed = analog_ctx.use_indexed
+        ctx.indexed_conv_parameters = (
+            getattr(analog_tile, "indexed_conv_parameters", None) if use_indexed else None
+        )
         if shared_weights is not None:
             ctx.shared_weights = shared_weights
             analog_tile.ensure_shared_weights(shared_weights)
@@ -106,7 +109,9 @@ class AnalogFunction(Function):
                     input_ = input_.to(analog_tile.device)
                 if runtime.offload_gradient:
                     grad_output = grad_output.to(analog_tile.device)
-                analog_ctx.accumulate_digital_gradient(input_, grad_output)
+                analog_ctx.accumulate_digital_gradient(
+                    input_, grad_output, indexed_conv_parameters=ctx.indexed_conv_parameters
+                )
             else:
                 # Store activation and errors for optimizer (for analog training)
                 analog_ctx.analog_input.append(input_)

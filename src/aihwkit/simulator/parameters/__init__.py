@@ -24,6 +24,7 @@ from .enums import (
 )
 
 from .training import UpdateParameters
+from .convolution import ConvParameters
 
 from .io import IOParameters, IOParametersIRDropT
 

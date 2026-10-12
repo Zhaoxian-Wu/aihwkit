@@ -19,6 +19,7 @@ from torch.nn.modules.utils import _single, _pair, _triple
 from aihwkit.exceptions import ModuleError
 from aihwkit.nn.modules.base import AnalogLayerBase
 from aihwkit.simulator.parameters.base import RPUConfigBase
+from aihwkit.simulator.parameters.convolution import ConvParameters
 
 
 class _AnalogConvNd(AnalogLayerBase, _ConvNd):
@@ -131,7 +132,13 @@ class _AnalogConvNd(AnalogLayerBase, _ConvNd):
         self.fold_indices, image_sizes, self.input_size = self._calculate_indexes(
             x_input, self.in_channels
         )
-        self.analog_module.set_indexed(self.fold_indices, image_sizes)
+        self.analog_module.set_indexed(
+            self.fold_indices,
+            image_sizes,
+            convolution_parameters=ConvParameters(
+                self.kernel_size, self.stride, self.padding, self.dilation
+            ),
+        )
 
     @no_grad()
     def _calculate_indexes(
